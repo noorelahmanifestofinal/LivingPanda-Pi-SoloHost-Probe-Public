@@ -1,6 +1,6 @@
 services:
   web:
-    image: ghcr.io/noorelahmanifestofinal/livingpanda-pi-solohost-probe:0.5.0
+    image: ghcr.io/noorelahmanifestofinal/livingpanda-pi-solohost-probe:0.6.0
     restart: unless-stopped
     labels:
       pi.ui.primary: "true"

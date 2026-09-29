@@ -1,79 +1,71 @@
 # LivingPanda Pi Utility
 
-## v0.5.0 - Root-Cause Intelligence
+## v0.6.0 — Recovery Intelligence
 
-v0.5 extends the incident engine with evidence-based likely-cause assessments.
+v0.6 extends Root-Cause Intelligence into a safe recovery lifecycle:
 
-### What it correlates
+**detect → explain → recommend → observe → verify**
 
-- Pi Node port reachability
-- LivingPanda worker and local-web health
-- worker latency baseline/anomalies
-- Windows host boot timestamp changes
-- Docker/Linux runtime uptime resets
-- live internet reachability
-- PC Intelligence network snapshots and state changes
-- Cloud DEV reconnect, WebSocket 1006, and Desktop RPC timeout counters
+### What it adds
+
+- cause-specific safe recovery recommendations after an incident closes
+- a 30-minute stability watch before declaring recovery verified
+- component recovery timing for Pi reachability, LivingPanda worker, local web, and overall incident recovery
+- recurrence detection for related incidents
+- escalation from `observe` to `inspect` when a failure returns
+- outcome records showing whether recovery remained stable or recurred
+- no automatic repair execution
 
 ### Example
 
 ```text
-Multiple local services degraded for 39 seconds -> recovered automatically
-
 Likely cause: Docker Desktop / Linux engine restart
 Confidence: high
 
-Evidence:
-- Docker/Linux runtime uptime reset
-- multiple local services degraded together
-- live internet remained reachable
-- services recovered after the runtime returned
+Recommended action:
+No intervention required — services recovered automatically.
+
+Recovery:
+Pi Node: 74 seconds
+LivingPanda worker: 41 seconds
+
+Outcome:
+No related failure returned within 30 minutes.
+Status: verified_stable
 ```
 
-The result is a **likely cause**, not a claim that correlation mathematically proves causation. v0.5 stores supporting evidence and limitations with each closed incident.
+If a related failure returns inside the stability window:
 
-## Optional PC Intelligence Evidence Bridge
-
-The `evidence-bridge/` companion service runs outside Pi SoloHost on localhost port `8001`.
-
-It has only two read-only host mounts:
-
-- `${LIVINGPANDA_DATA_DIR:-D:/LivingPanda-Data}/PC-Intelligence`
-- `${LOCALAPPDATA}/LivingPanda/CloudDevice/logs`
-
-It returns only whitelisted summaries and counters. It does **not** return raw Cloud Device log content, expose Docker, or provide Commander access.
-
-Run locally:
-
-```powershell
-cd evidence-bridge
-docker compose -f compose.host.yml up -d --build
+```text
+Status: recurred
+Recommended action:
+Repeated failure detected — inspect Docker Desktop / Linux engine health
+and use guarded recovery only if the engine is still unhealthy.
 ```
 
-If the bridge is unavailable, the Pi utility continues working and marks the assessment as limited to local signals.
+### Safety model
 
-## Persistence
+The SoloHost app remains read-only:
+
+- no Docker socket
+- no privileged mode
+- read-only root filesystem
+- all Linux capabilities dropped
+- no Windows host mounts
+- no Commander control
+- no network or service restart commands
+- recommendations are guidance only
+
+The optional PC Intelligence Evidence Bridge remains read-only and only exposes whitelisted summaries from PC Intelligence and Cloud Device reliability logs.
+
+### Persistence
 
 - health samples: 24 hours
 - raw events: 7 days
 - root-cause evidence samples: 7 days
-- incidents: 30 days
+- incidents/recovery outcomes: 30 days
 - SQLite remains in Pi's app-owned Docker volume
-
-## Security boundary
-
-The Pi SoloHost container remains:
-
-- unprivileged
-- read-only root filesystem
-- `cap_drop: ALL`
-- no Docker socket
-- no Windows host mounts
-- no Commander control
-- no API keys or private files
-
-The optional Evidence Bridge is also unprivileged/read-only and exposes only localhost port `8001`.
 
 Canonical source: `LivingPanda-Online/LivingPanda-Pi-SoloHost-Probe`
 
-Public SoloHost image: `ghcr.io/noorelahmanifestofinal/livingpanda-pi-solohost-probe:0.5.0`
+Public image: `ghcr.io/noorelahmanifestofinal/livingpanda-pi-solohost-probe:0.6.0`

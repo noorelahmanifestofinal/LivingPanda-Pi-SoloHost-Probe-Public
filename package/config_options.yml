@@ -1,8 +1,8 @@
 title: LivingPanda Pi Utility
 eyebrow: LivingPanda + Pi
-description: Root-Cause Intelligence that correlates Pi, LivingPanda, runtime, network, PC Intelligence, and Cloud DEV evidence into likely-cause assessments with confidence and supporting evidence.
-footer_hint: The Pi app remains read-only and isolated. Optional host evidence is provided only by a localhost read-only companion bridge.
+description: Recovery Intelligence that turns likely causes into safe read-only recommendations, tracks component recovery time, and verifies whether recovery remains stable or recurs.
+footer_hint: Recommendations never execute repairs. The app only observes later health evidence and incident recurrence.
 output_file: .env
 after_save: >
-  Configuration saved. Start the app to begin local read-only root-cause monitoring.
+  Configuration saved. Start the app to begin local read-only recovery monitoring.
 fields: []

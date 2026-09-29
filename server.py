@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 HOST = "0.0.0.0"
 PORT = 8080
 HOST_GATEWAY = "host.docker.internal"
@@ -35,6 +35,7 @@ INCIDENT_CORRELATION_SECONDS = 30
 ROOT_CAUSE_CONTEXT_SECONDS = 30
 PC_INTEL_FRESH_SECONDS = 5 * 60
 RUNTIME_RESET_MARGIN_SECONDS = 60
+RECOVERY_STABILITY_SECONDS = int(os.environ.get("RECOVERY_STABILITY_SECONDS", 30 * 60))
 BASE_DIR = Path(__file__).resolve().parent
 INDEX = (BASE_DIR / "index.html").read_text(encoding="utf-8")
 
@@ -171,6 +172,14 @@ def init_db():
         ensure_column(conn, "incidents", "root_cause_confidence", "TEXT")
         ensure_column(conn, "incidents", "root_cause_score", "REAL")
         ensure_column(conn, "incidents", "root_cause_evidence_json", "TEXT")
+        ensure_column(conn, "incidents", "recovery_action", "TEXT")
+        ensure_column(conn, "incidents", "recovery_action_mode", "TEXT")
+        ensure_column(conn, "incidents", "recovery_status", "TEXT")
+        ensure_column(conn, "incidents", "recovery_started_ts", "INTEGER")
+        ensure_column(conn, "incidents", "recovery_verified_ts", "INTEGER")
+        ensure_column(conn, "incidents", "recovery_window_seconds", "INTEGER")
+        ensure_column(conn, "incidents", "component_recovery_json", "TEXT")
+        ensure_column(conn, "incidents", "recovery_outcome_json", "TEXT")
         ensure_column(conn, "evidence_samples", "pc_boot_at", "TEXT")
         ensure_column(conn, "evidence_samples", "pc_uptime_seconds", "REAL")
         ensure_column(conn, "evidence_samples", "pc_wifi_state", "TEXT")
@@ -887,17 +896,342 @@ def infer_root_cause(conn, incident_row, closed_ts):
     }
 
 
+
+def component_recovery_metrics(conn, incident_row, closed_ts):
+    start = incident_row["opened_ts"]
+    rows = conn.execute(
+        """
+        SELECT ts, pi_reachable_ports, worker_ok, local_web_ok
+        FROM samples
+        WHERE ts >= ? AND ts <= ?
+        ORDER BY ts ASC
+        """,
+        (start, closed_ts),
+    ).fetchall()
+
+    def duration_after_last_bad(bad_predicate, good_predicate):
+        bad = [r for r in rows if bad_predicate(r)]
+        if not bad:
+            return None
+        last_bad_ts = bad[-1]["ts"]
+        recovered = next(
+            (r for r in rows if r["ts"] > last_bad_ts and good_predicate(r)),
+            None,
+        )
+        if recovered is None:
+            return None
+        return max(0, int(recovered["ts"] - start))
+
+    metrics = {
+        "incident_recovery_seconds": max(0, int(closed_ts - start)),
+        "pi_recovery_seconds": duration_after_last_bad(
+            lambda r: r["pi_reachable_ports"] < 3,
+            lambda r: r["pi_reachable_ports"] == 3,
+        ),
+        "worker_recovery_seconds": duration_after_last_bad(
+            lambda r: not bool(r["worker_ok"]),
+            lambda r: bool(r["worker_ok"]),
+        ),
+        "local_web_recovery_seconds": duration_after_last_bad(
+            lambda r: not bool(r["local_web_ok"]),
+            lambda r: bool(r["local_web_ok"]),
+        ),
+    }
+    if incident_row["category"] == "worker_latency":
+        metrics["worker_latency_recovery_seconds"] = max(
+            0, int(closed_ts - start)
+        )
+    return metrics
+
+
+def recovery_recommendation(root, recovered, reason):
+    cause = root.get("cause") or "unknown"
+    confidence = root.get("confidence") or "low"
+
+    if not recovered:
+        return {
+            "mode": "observe",
+            "operator_action_required": False,
+            "action": (
+                "Continue observing the replacement incident. "
+                "Do not act on this superseded incident."
+            ),
+        }
+
+    if cause == "unknown" or confidence == "low":
+        return {
+            "mode": "observe",
+            "operator_action_required": False,
+            "action": (
+                "Observe and collect more evidence. Do not restart services "
+                "based on a low-confidence root-cause assessment."
+            ),
+        }
+
+    actions = {
+        "host_restart": (
+            "No intervention required — services recovered automatically. "
+            "If it recurs, inspect Windows restart and power events before "
+            "restarting applications."
+        ),
+        "docker_restart": (
+            "No intervention required — services recovered automatically. "
+            "If it recurs, inspect Docker Desktop / Linux engine health and "
+            "use normal guarded Docker recovery only if it is still unhealthy."
+        ),
+        "network_interruption": (
+            "No intervention required — connectivity recovered automatically. "
+            "If it recurs, inspect adapter, DNS, gateway, and route changes "
+            "before restarting applications."
+        ),
+        "livingpanda_worker": (
+            "No intervention required now — the LivingPanda worker recovered "
+            "automatically. If it recurs, inspect worker health and logs and "
+            "use guarded worker recovery instead of restarting unrelated services."
+        ),
+        "pi_node": (
+            "No intervention required now — Pi connectivity recovered "
+            "automatically. If it recurs, inspect Pi Node, container, and "
+            "network state before restarting Docker."
+        ),
+        "local_stack": (
+            "No intervention required now — the local stack recovered "
+            "automatically. If it recurs, inspect Docker/runtime and affected "
+            "services together before restarting individual components."
+        ),
+    }
+    return {
+        "mode": "observe",
+        "operator_action_required": False,
+        "action": actions.get(
+            cause,
+            "Observe the recovered services and intervene only if the failure returns.",
+        ),
+    }
+
+
+def recurrence_recommendation(cause):
+    actions = {
+        "host_restart": (
+            "Repeated failure detected — inspect Windows restart, power, and "
+            "shutdown evidence before making service-level changes."
+        ),
+        "docker_restart": (
+            "Repeated failure detected — inspect Docker Desktop / Linux engine "
+            "health and restart Docker only through normal guarded controls if "
+            "the engine is currently unhealthy."
+        ),
+        "network_interruption": (
+            "Repeated failure detected — inspect Wi-Fi/adapter state, DNS, "
+            "gateway, and route changes before restarting applications."
+        ),
+        "livingpanda_worker": (
+            "Repeated failure detected — inspect the LivingPanda worker health "
+            "and logs, then use guarded worker recovery if it is still unhealthy."
+        ),
+        "pi_node": (
+            "Repeated failure detected — inspect Pi Node/container/network "
+            "state before restarting Docker or unrelated LivingPanda services."
+        ),
+        "local_stack": (
+            "Repeated failure detected — inspect the Docker/runtime and all "
+            "affected local services together before taking recovery action."
+        ),
+    }
+    return actions.get(
+        cause,
+        "Repeated failure detected — inspect fresh evidence before taking recovery action.",
+    )
+
+
+def related_recovery_incident(original, candidate):
+    if candidate["id"] == original["id"]:
+        return False
+    if candidate["opened_ts"] <= (original["closed_ts"] or 0):
+        return False
+    if candidate["category"] == original["category"]:
+        return True
+
+    cause = original["root_cause"] or "unknown"
+    related = {
+        "host_restart": {
+            "host_network", "pi_connectivity", "livingpanda_stack",
+            "livingpanda_worker", "livingpanda_web",
+        },
+        "docker_restart": {
+            "host_network", "pi_connectivity", "livingpanda_stack",
+            "livingpanda_worker", "livingpanda_web",
+        },
+        "network_interruption": {
+            "host_network", "pi_connectivity", "livingpanda_stack",
+        },
+        "livingpanda_worker": {
+            "livingpanda_worker", "worker_latency", "livingpanda_stack",
+        },
+        "pi_node": {"pi_connectivity", "host_network"},
+        "local_stack": {
+            "host_network", "livingpanda_stack", "livingpanda_web",
+            "livingpanda_worker",
+        },
+        "unknown": {original["category"]},
+    }
+    return candidate["category"] in related.get(cause, {original["category"]})
+
+
+def verify_pending_recoveries(conn, now_ts):
+    pending = conn.execute(
+        """
+        SELECT * FROM incidents
+        WHERE status='closed' AND recovery_status='pending_stability'
+        ORDER BY closed_ts ASC, id ASC
+        """
+    ).fetchall()
+
+    for row in pending:
+        closed_ts = row["closed_ts"]
+        if closed_ts is None:
+            continue
+        window = int(row["recovery_window_seconds"] or RECOVERY_STABILITY_SECONDS)
+        deadline = closed_ts + window
+        candidates = conn.execute(
+            """
+            SELECT * FROM incidents
+            WHERE id != ? AND opened_ts > ? AND opened_ts <= ?
+            ORDER BY opened_ts ASC, id ASC
+            """,
+            (row["id"], closed_ts, min(now_ts, deadline)),
+        ).fetchall()
+        recurrence = next(
+            (candidate for candidate in candidates
+             if related_recovery_incident(row, candidate)),
+            None,
+        )
+
+        if recurrence is not None:
+            previous = {}
+            try:
+                previous = json.loads(row["recovery_outcome_json"] or "{}")
+            except Exception:
+                previous = {}
+            cause = row["root_cause"] or "unknown"
+            action = recurrence_recommendation(cause)
+            outcome = {
+                **previous,
+                "result": "recurred",
+                "operator_action_required": True,
+                "recurrence_incident_id": recurrence["id"],
+                "recurrence_category": recurrence["category"],
+                "seconds_after_recovery": max(
+                    0, int(recurrence["opened_ts"] - closed_ts)
+                ),
+                "message": (
+                    "A related failure returned before the stability window completed."
+                ),
+            }
+            conn.execute(
+                """
+                UPDATE incidents
+                SET recovery_status='recurred', recovery_verified_ts=?,
+                    recovery_action=?, recovery_action_mode='inspect',
+                    recovery_outcome_json=?
+                WHERE id=?
+                """,
+                (
+                    recurrence["opened_ts"],
+                    action,
+                    json.dumps(outcome, separators=(",", ":")),
+                    row["id"],
+                ),
+            )
+            add_event(
+                conn,
+                recurrence["opened_ts"],
+                "recovery_recurred",
+                "warning",
+                (
+                    f"Incident {row['id']} recovery did not remain stable; "
+                    f"related incident {recurrence['id']} opened."
+                ),
+                {
+                    "incident_id": row["id"],
+                    "recurrence_incident_id": recurrence["id"],
+                    "cause": cause,
+                },
+            )
+            continue
+
+        if now_ts >= deadline:
+            previous = {}
+            try:
+                previous = json.loads(row["recovery_outcome_json"] or "{}")
+            except Exception:
+                previous = {}
+            outcome = {
+                **previous,
+                "result": "verified_stable",
+                "stable_window_seconds": window,
+                "no_related_failure": True,
+                "message": (
+                    f"No related failure returned within {format_duration(window)}."
+                ),
+            }
+            conn.execute(
+                """
+                UPDATE incidents
+                SET recovery_status='verified_stable',
+                    recovery_verified_ts=?, recovery_outcome_json=?
+                WHERE id=?
+                """,
+                (
+                    now_ts,
+                    json.dumps(outcome, separators=(",", ":")),
+                    row["id"],
+                ),
+            )
+            add_event(
+                conn,
+                now_ts,
+                "recovery_verified",
+                "info",
+                (
+                    f"Incident {row['id']} recovery remained stable for "
+                    f"{format_duration(window)}."
+                ),
+                {
+                    "incident_id": row["id"],
+                    "stable_window_seconds": window,
+                },
+            )
+
+
 def close_incident(conn, row, ts, reason="recovered"):
     duration = max(0, ts - row["opened_ts"])
     recovered = reason == "recovered"
     summary = incident_summary(row["category"], duration, recovered=recovered)
     root = infer_root_cause(conn, row, ts)
+    recovery = recovery_recommendation(root, recovered, reason)
+    components = component_recovery_metrics(conn, row, ts)
+    recovery_status = "pending_stability" if recovered else "superseded"
+    recovery_verified_ts = None if recovered else ts
+    recovery_outcome = {
+        "result": "pending_stability" if recovered else "superseded",
+        "initial_action": recovery["action"],
+        "operator_action_required": recovery["operator_action_required"],
+        "message": (
+            f"Recovery observed; watching {format_duration(RECOVERY_STABILITY_SECONDS)} for recurrence."
+            if recovered
+            else "Incident condition changed before a clean recovery; follow the replacement incident."
+        ),
+    }
     conn.execute(
         """
         UPDATE incidents
         SET closed_ts=?, status='closed', close_reason=?, summary=?,
             root_cause=?, root_cause_confidence=?, root_cause_score=?,
-            root_cause_evidence_json=?
+            root_cause_evidence_json=?, recovery_action=?,
+            recovery_action_mode=?, recovery_status=?, recovery_started_ts=?,
+            recovery_verified_ts=?, recovery_window_seconds=?,
+            component_recovery_json=?, recovery_outcome_json=?
         WHERE id=?
         """,
         (
@@ -915,6 +1249,14 @@ def close_incident(conn, row, ts, reason="recovered"):
                 },
                 separators=(",", ":"),
             ),
+            recovery["action"],
+            recovery["mode"],
+            recovery_status,
+            ts,
+            recovery_verified_ts,
+            RECOVERY_STABILITY_SECONDS,
+            json.dumps(components, separators=(",", ":")),
+            json.dumps(recovery_outcome, separators=(",", ":")),
             row["id"],
         ),
     )
@@ -929,6 +1271,19 @@ def close_incident(conn, row, ts, reason="recovered"):
             "cause": root["cause"],
             "confidence": root["confidence"],
             "score": root["score"],
+        },
+    )
+    add_event(
+        conn,
+        ts,
+        "recovery_recommendation",
+        "info",
+        recovery["action"],
+        {
+            "incident_id": row["id"],
+            "mode": recovery["mode"],
+            "operator_action_required": recovery["operator_action_required"],
+            "recovery_status": recovery_status,
         },
     )
     if recovered:
@@ -1293,6 +1648,7 @@ def record_sample(status, evidence=None):
                     )
 
         handle_incident(conn, status, baseline)
+        verify_pending_recoveries(conn, ts)
         conn.execute(
             "DELETE FROM samples WHERE ts < ?",
             (ts - SAMPLE_RETENTION_SECONDS,),
@@ -1424,6 +1780,59 @@ def root_cause_from_row(row):
     }
 
 
+
+def recovery_from_row(row):
+    if not row["recovery_status"] and not row["recovery_action"]:
+        return None
+    components = {}
+    outcome = {}
+    try:
+        components = json.loads(row["component_recovery_json"] or "{}")
+    except Exception:
+        components = {}
+    try:
+        outcome = json.loads(row["recovery_outcome_json"] or "{}")
+    except Exception:
+        outcome = {}
+
+    remaining = None
+    if (
+        row["recovery_status"] == "pending_stability"
+        and row["closed_ts"] is not None
+    ):
+        window = int(
+            row["recovery_window_seconds"] or RECOVERY_STABILITY_SECONDS
+        )
+        remaining = max(
+            0,
+            row["closed_ts"] + window - int(time.time()),
+        )
+
+    return {
+        "action": row["recovery_action"],
+        "mode": row["recovery_action_mode"],
+        "status": row["recovery_status"],
+        "started_ts": row["recovery_started_ts"],
+        "started_at": (
+            utc_iso(row["recovery_started_ts"])
+            if row["recovery_started_ts"] is not None
+            else None
+        ),
+        "verified_ts": row["recovery_verified_ts"],
+        "verified_at": (
+            utc_iso(row["recovery_verified_ts"])
+            if row["recovery_verified_ts"] is not None
+            else None
+        ),
+        "stability_window_seconds": int(
+            row["recovery_window_seconds"] or RECOVERY_STABILITY_SECONDS
+        ),
+        "stability_remaining_seconds": remaining,
+        "components": components,
+        "outcome": outcome,
+    }
+
+
 def incident_to_dict(row):
     now = int(time.time())
     closed = row["closed_ts"]
@@ -1448,6 +1857,7 @@ def incident_to_dict(row):
         "min_pi_ports": row["min_pi_ports"],
         "baseline_ms": row["baseline_ms"],
         "root_cause": root_cause_from_row(row),
+        "recovery": recovery_from_row(row),
         "details": json.loads(row["details_json"] or "{}"),
     }
 
@@ -1566,12 +1976,13 @@ def current_status():
         "incident_retention_days": 30,
         "evidence_retention_days": 7,
         "correlation_window_seconds": INCIDENT_CORRELATION_SECONDS,
+        "recovery_stability_seconds": RECOVERY_STABILITY_SECONDS,
     }
     return status
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LivingPandaPiUtility/0.5"
+    server_version = "LivingPandaPiUtility/0.6"
 
     def send_bytes(self, status, body: bytes, content_type: str):
         self.send_response(status)

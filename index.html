@@ -6,7 +6,7 @@
 <title>LivingPanda Pi Utility</title>
 <style>
 :root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#171717;background:#f5f6fa}
-*{box-sizing:border-box}body{margin:0}.wrap{max-width:1020px;margin:auto;padding:20px 14px 40px}
+*{box-sizing:border-box}body{margin:0}.wrap{max-width:1040px;margin:auto;padding:20px 14px 40px}
 h1{margin:0 0 4px;font-size:clamp(26px,5vw,38px)}.sub{color:#666;margin:0 0 18px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
 .card,.panel{background:#fff;border:1px solid #e6e7eb;border-radius:16px;padding:16px;box-shadow:0 4px 18px #00000008}
@@ -16,18 +16,21 @@ h1{margin:0 0 4px;font-size:clamp(26px,5vw,38px)}.sub{color:#666;margin:0 0 18px
 .metric,.evidence-cell{background:#fafafd;border-radius:12px;padding:10px}.metric b,.evidence-cell b{display:block;font-size:18px}
 .incident{padding:12px;border-radius:12px;background:#fafafd;border-left:4px solid #aaa;margin-top:8px}
 .incident.warning{border-color:#d28b23}.incident.error{border-color:#bf3f3f}.incident.info{border-color:#2d9d5b}
-.incident .meta{font-size:12px;color:#777;margin-top:4px}.root{margin-top:9px;padding:10px;border-radius:10px;background:#fff;border:1px solid #e7e7ec}
-.root b{display:block;margin-bottom:4px}.confidence{font-size:11px;text-transform:uppercase;letter-spacing:.05em;border:1px solid #ddd;border-radius:999px;padding:3px 7px;margin-left:5px}
+.incident .meta{font-size:12px;color:#777;margin-top:4px}
+.root,.recovery{margin-top:9px;padding:10px;border-radius:10px;background:#fff;border:1px solid #e7e7ec}
+.root b,.recovery b{display:block;margin-bottom:4px}
+.confidence,.state{font-size:11px;text-transform:uppercase;letter-spacing:.05em;border:1px solid #ddd;border-radius:999px;padding:3px 7px;margin-left:5px}
 .evidence-list{margin:7px 0 0 18px;padding:0;font-size:13px;color:#525760}.limitations{margin-top:7px;color:#8b650f;font-size:12px}
+.recovery-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px}.recovery-cell{background:#fafafd;padding:8px;border-radius:8px;font-size:12px}.recovery-cell b{font-size:15px;margin-top:2px}
 .active{background:#fff8ec;border:1px solid #f0d7ad}.security{margin-top:12px;font-size:13px;color:#626770}
 button{border:0;background:#171717;color:#fff;border-radius:10px;padding:9px 12px;font-weight:650}
-@media(max-width:700px){.metrics,.evidence-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:700px){.metrics,.evidence-grid,.recovery-grid{grid-template-columns:1fr 1fr}}
 </style>
 </head>
 <body>
 <div class="wrap">
 <h1>LivingPanda Pi Utility</h1>
-<p class="sub">v0.5 · Root-Cause Intelligence</p>
+<p class="sub">v0.6 · Recovery Intelligence</p>
 
 <div class="grid">
   <div class="card"><div class="label">Pi Node</div><div id="pi" class="value">Checking…</div><div id="piDetail" class="muted"></div></div>
@@ -62,12 +65,12 @@ button{border:0;background:#171717;color:#fff;border-radius:10px;padding:9px 12p
 </div>
 
 <div class="panel" style="margin-top:12px">
-  <div class="label">Recent incidents + likely causes</div>
+  <div class="label">Recent incidents · cause · recovery</div>
   <div id="incidents"></div>
 </div>
 
 <div class="security">
-Root-cause assessments are evidence-based estimates, not certainties. The SoloHost app has no Docker socket, host mounts, privileged mode, Commander control, keys, or private files. Optional host evidence comes only through the localhost read-only Evidence Bridge.
+Recovery recommendations are read-only guidance. The SoloHost app never runs repair commands, restarts Docker, changes network settings, or controls Commander. It verifies outcomes only from later health evidence and incident recurrence.
 </div>
 
 <p><button id="refresh">Refresh now</button> <span id="checked" class="muted"></span></p>
@@ -77,6 +80,7 @@ Root-cause assessments are evidence-based estimates, not certainties. The SoloHo
 const pct=v=>v==null?'—':Number(v).toFixed(1)+'%';
 const ms=v=>v==null?'—':Number(v).toFixed(1)+' ms';
 const age=v=>v==null?'—':v<60?Math.round(v)+'s':v<3600?Math.round(v/60)+'m':(v/3600).toFixed(1)+'h';
+const dur=v=>v==null?'—':v<60?Math.round(v)+'s':Math.floor(v/60)+'m '+Math.round(v%60)+'s';
 function sclass(el,state){el.className='value '+state}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function rootHtml(r){
@@ -86,9 +90,33 @@ function rootHtml(r){
   return '<div class="root"><b>Likely cause: '+esc(r.label)+' <span class="confidence">'+esc(r.confidence)+'</span></b>'
     +(ev?'<ul class="evidence-list">'+ev+'</ul>':'<div class="muted">No supporting evidence recorded.</div>')+lim+'</div>';
 }
+function recoveryHtml(r){
+  if(!r)return '';
+  const c=r.components||{},o=r.outcome||{};
+  const stateLabel={
+    pending_stability:'Watching for recurrence',
+    verified_stable:'Verified stable',
+    recurred:'Failure returned',
+    superseded:'Superseded'
+  }[r.status]||r.status||'Unknown';
+  const remaining=r.status==='pending_stability'&&r.stability_remaining_seconds!=null?
+    ' · '+dur(r.stability_remaining_seconds)+' remaining':'';
+  const cells=[
+    ['Pi recovery',c.pi_recovery_seconds],
+    ['Worker recovery',c.worker_recovery_seconds],
+    ['Web recovery',c.local_web_recovery_seconds],
+    ['Overall recovery',c.incident_recovery_seconds]
+  ].filter(x=>x[1]!=null).map(x=>'<div class="recovery-cell"><span class="muted">'+esc(x[0])+'</span><b>'+dur(x[1])+'</b></div>').join('');
+  return '<div class="recovery"><b>Recommended action <span class="state">'+esc(stateLabel)+'</span></b>'
+    +'<div>'+esc(r.action||'Observe current health evidence.')+'</div>'
+    +(cells?'<div class="recovery-grid">'+cells+'</div>':'')
+    +(o.message?'<div class="muted" style="margin-top:8px">Outcome: '+esc(o.message)+remaining+'</div>':'')
+    +'</div>';
+}
 function incidentHtml(x){
   return '<div class="incident '+esc(x.severity)+'"><b>'+esc(x.summary)+'</b><div class="meta">'
-    +esc(x.category)+' · '+esc(x.status)+' · '+esc(x.duration)+'</div>'+rootHtml(x.root_cause)+'</div>';
+    +esc(x.category)+' · '+esc(x.status)+' · '+esc(x.duration)+'</div>'
+    +rootHtml(x.root_cause)+recoveryHtml(x.recovery)+'</div>';
 }
 async function load(){
   try{
@@ -119,7 +147,7 @@ async function load(){
     document.querySelector('#pcAge').textContent=e?age(e.pc_intel_freshness_seconds):'—';
     document.querySelector('#cloudReconnects').textContent=e&&e.cloud_counts?e.cloud_counts.reconnect_requested??'—':'—';
     document.querySelector('#evidenceNote').textContent=e&&e.pc_intel_freshness_seconds>300?
-      'PC Intelligence snapshots are currently stale; live internet and local runtime evidence are weighted more heavily.':
+      'PC Intelligence snapshots are stale; live internet and local runtime evidence are weighted more heavily.':
       'Fresh evidence is weighted more heavily than stale or missing sources.';
 
     const q=h.summary;
