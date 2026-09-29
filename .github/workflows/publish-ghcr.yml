@@ -1,4 +1,4 @@
-name: Publish public GHCR image
+name: Publish public GHCR images
 
 on:
   push:
@@ -26,8 +26,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Docker metadata
-        id: meta
+      - name: SoloHost image metadata
+        id: solohost_meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/noorelahmanifestofinal/livingpanda-pi-solohost-probe
@@ -35,10 +35,27 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=latest
 
-      - name: Build and push
+      - name: Build and push SoloHost image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.solohost_meta.outputs.tags }}
+          labels: ${{ steps.solohost_meta.outputs.labels }}
+
+      - name: Evidence Bridge image metadata
+        id: bridge_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/noorelahmanifestofinal/livingpanda-pi-evidence-bridge
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+
+      - name: Build and push Evidence Bridge image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./evidence-bridge
+          push: true
+          tags: ${{ steps.bridge_meta.outputs.tags }}
+          labels: ${{ steps.bridge_meta.outputs.labels }}

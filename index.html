@@ -1,29 +1,139 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LivingPanda Pi Utility</title>
-<style>:root{font-family:system-ui,sans-serif;color:#171717;background:#f5f6fa}*{box-sizing:border-box}body{margin:0}.wrap{max-width:980px;margin:auto;padding:20px 14px 40px}h1{margin:0 0 4px;font-size:clamp(26px,5vw,38px)}.sub{color:#666;margin:0 0 18px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}.card,.panel{background:#fff;border:1px solid #e6e7eb;border-radius:16px;padding:16px;box-shadow:0 4px 18px #00000008}.label{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#747982}.value{font-size:22px;font-weight:750;margin:7px 0}.ok{color:#23834e}.warn{color:#b06e10}.bad{color:#b33a3a}.muted{color:#6b7078;font-size:13px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}.metric{background:#fafafd;border-radius:12px;padding:10px}.metric b{display:block;font-size:18px}.incident{padding:12px;border-radius:12px;background:#fafafd;border-left:4px solid #aaa;margin-top:8px}.incident.warning{border-color:#d28b23}.incident.error{border-color:#bf3f3f}.incident.info{border-color:#2d9d5b}.incident .meta{font-size:12px;color:#777;margin-top:4px}.active{background:#fff8ec;border:1px solid #f0d7ad}.baseline{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.baseline>div{background:#fafafd;padding:10px;border-radius:10px}.security{margin-top:12px;font-size:13px;color:#626770}button{border:0;background:#171717;color:#fff;border-radius:10px;padding:9px 12px;font-weight:650}@media(max-width:650px){.metrics,.baseline{grid-template-columns:1fr 1fr}}</style></head>
-<body><div class="wrap"><h1>LivingPanda Pi Utility</h1><p class="sub">v0.4 · Incident Intelligence</p>
-<div class="grid"><div class="card"><div class="label">Pi Node</div><div id="pi" class="value">Checking…</div><div id="piDetail" class="muted"></div></div>
-<div class="card"><div class="label">LivingPanda worker</div><div id="worker" class="value">Checking…</div><div id="workerDetail" class="muted"></div></div>
-<div class="card"><div class="label">SoloHost</div><div id="solo" class="value">Checking…</div><div id="soloDetail" class="muted"></div></div></div>
-<div class="panel active" style="margin-top:12px"><div class="label">Current incident</div><div id="activeIncident" style="margin-top:8px"></div></div>
-<div class="panel" style="margin-top:12px"><div class="label">Normal worker latency baseline</div><div class="baseline" style="margin-top:10px">
-<div><span class="muted">Samples</span><b id="baseSamples">—</b></div><div><span class="muted">Median</span><b id="baseMedian">—</b></div><div><span class="muted">P95</span><b id="baseP95">—</b></div><div><span class="muted">Incident threshold</span><b id="baseThreshold">—</b></div></div></div>
-<div class="panel" style="margin-top:12px"><div class="label">Last 60 minutes</div><div class="metrics">
-<div class="metric"><span class="muted">Pi availability</span><b id="piAvail">—</b></div><div class="metric"><span class="muted">Worker availability</span><b id="workerAvail">—</b></div><div class="metric"><span class="muted">Avg latency</span><b id="avgLat">—</b></div><div class="metric"><span class="muted">P95 latency</span><b id="p95Lat">—</b></div></div></div>
-<div class="panel" style="margin-top:12px"><div class="label">Recent incidents</div><div id="incidents"></div></div>
-<div class="security">Incidents are correlated locally from read-only health samples. SQLite stays in this app's Docker volume. No Docker socket, host mounts, privileged mode, Commander control, keys, or private files.</div>
-<p><button id="refresh">Refresh now</button> <span id="checked" class="muted"></span></p></div>
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LivingPanda Pi Utility</title>
+<style>
+:root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#171717;background:#f5f6fa}
+*{box-sizing:border-box}body{margin:0}.wrap{max-width:1020px;margin:auto;padding:20px 14px 40px}
+h1{margin:0 0 4px;font-size:clamp(26px,5vw,38px)}.sub{color:#666;margin:0 0 18px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+.card,.panel{background:#fff;border:1px solid #e6e7eb;border-radius:16px;padding:16px;box-shadow:0 4px 18px #00000008}
+.label{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#747982}.value{font-size:22px;font-weight:750;margin:7px 0}
+.ok{color:#23834e}.warn{color:#b06e10}.bad{color:#b33a3a}.muted{color:#6b7078;font-size:13px}
+.metrics,.evidence-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}
+.metric,.evidence-cell{background:#fafafd;border-radius:12px;padding:10px}.metric b,.evidence-cell b{display:block;font-size:18px}
+.incident{padding:12px;border-radius:12px;background:#fafafd;border-left:4px solid #aaa;margin-top:8px}
+.incident.warning{border-color:#d28b23}.incident.error{border-color:#bf3f3f}.incident.info{border-color:#2d9d5b}
+.incident .meta{font-size:12px;color:#777;margin-top:4px}.root{margin-top:9px;padding:10px;border-radius:10px;background:#fff;border:1px solid #e7e7ec}
+.root b{display:block;margin-bottom:4px}.confidence{font-size:11px;text-transform:uppercase;letter-spacing:.05em;border:1px solid #ddd;border-radius:999px;padding:3px 7px;margin-left:5px}
+.evidence-list{margin:7px 0 0 18px;padding:0;font-size:13px;color:#525760}.limitations{margin-top:7px;color:#8b650f;font-size:12px}
+.active{background:#fff8ec;border:1px solid #f0d7ad}.security{margin-top:12px;font-size:13px;color:#626770}
+button{border:0;background:#171717;color:#fff;border-radius:10px;padding:9px 12px;font-weight:650}
+@media(max-width:700px){.metrics,.evidence-grid{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>LivingPanda Pi Utility</h1>
+<p class="sub">v0.5 · Root-Cause Intelligence</p>
+
+<div class="grid">
+  <div class="card"><div class="label">Pi Node</div><div id="pi" class="value">Checking…</div><div id="piDetail" class="muted"></div></div>
+  <div class="card"><div class="label">LivingPanda worker</div><div id="worker" class="value">Checking…</div><div id="workerDetail" class="muted"></div></div>
+  <div class="card"><div class="label">SoloHost</div><div id="solo" class="value">Checking…</div><div id="soloDetail" class="muted"></div></div>
+</div>
+
+<div class="panel active" style="margin-top:12px">
+  <div class="label">Current incident</div>
+  <div id="activeIncident" style="margin-top:8px"></div>
+</div>
+
+<div class="panel" style="margin-top:12px">
+  <div class="label">Root-cause evidence sources</div>
+  <div class="evidence-grid">
+    <div class="evidence-cell"><span class="muted">Evidence bridge</span><b id="bridge">—</b></div>
+    <div class="evidence-cell"><span class="muted">Live internet</span><b id="internet">—</b></div>
+    <div class="evidence-cell"><span class="muted">PC Intelligence age</span><b id="pcAge">—</b></div>
+    <div class="evidence-cell"><span class="muted">Cloud reconnects</span><b id="cloudReconnects">—</b></div>
+  </div>
+  <div id="evidenceNote" class="muted"></div>
+</div>
+
+<div class="panel" style="margin-top:12px">
+  <div class="label">Last 60 minutes</div>
+  <div class="metrics">
+    <div class="metric"><span class="muted">Pi availability</span><b id="piAvail">—</b></div>
+    <div class="metric"><span class="muted">Worker availability</span><b id="workerAvail">—</b></div>
+    <div class="metric"><span class="muted">Avg latency</span><b id="avgLat">—</b></div>
+    <div class="metric"><span class="muted">P95 latency</span><b id="p95Lat">—</b></div>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:12px">
+  <div class="label">Recent incidents + likely causes</div>
+  <div id="incidents"></div>
+</div>
+
+<div class="security">
+Root-cause assessments are evidence-based estimates, not certainties. The SoloHost app has no Docker socket, host mounts, privileged mode, Commander control, keys, or private files. Optional host evidence comes only through the localhost read-only Evidence Bridge.
+</div>
+
+<p><button id="refresh">Refresh now</button> <span id="checked" class="muted"></span></p>
+</div>
+
 <script>
-const pct=v=>v==null?'—':Number(v).toFixed(1)+'%';const ms=v=>v==null?'—':Number(v).toFixed(1)+' ms';
+const pct=v=>v==null?'—':Number(v).toFixed(1)+'%';
+const ms=v=>v==null?'—':Number(v).toFixed(1)+' ms';
+const age=v=>v==null?'—':v<60?Math.round(v)+'s':v<3600?Math.round(v/60)+'m':(v/3600).toFixed(1)+'h';
 function sclass(el,state){el.className='value '+state}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function incidentHtml(x){return '<div class="incident '+esc(x.severity)+'"><b>'+esc(x.summary)+'</b><div class="meta">'+esc(x.category)+' · '+esc(x.status)+' · '+esc(x.duration)+'</div></div>'}
-async function load(){try{const [s,h,b,inc]=await Promise.all([fetch('/api/status').then(r=>r.json()),fetch('/api/history?minutes=60').then(r=>r.json()),fetch('/api/baseline').then(r=>r.json()),fetch('/api/incidents?limit=12').then(r=>r.json())]);
-const pn=s.pi_node,w=s.livingpanda.data_worker;document.querySelector('#pi').textContent=pn.reachable_ports===3?'Reachable':pn.reachable_ports?'Partial':'Unreachable';sclass(document.querySelector('#pi'),pn.reachable_ports===3?'ok':pn.reachable_ports?'warn':'bad');document.querySelector('#piDetail').textContent=pn.reachable_ports+' of 3 local Pi ports reachable';
-document.querySelector('#worker').textContent=w.reachable?'Available':'Unavailable';sclass(document.querySelector('#worker'),w.reachable?'ok':'bad');document.querySelector('#workerDetail').textContent=w.reachable?'HTTP '+w.status_code+' · '+w.latency_ms+' ms':'Health endpoint unavailable';
-document.querySelector('#solo').textContent=s.solo_host.running_in_docker?'Healthy':'Unknown';sclass(document.querySelector('#solo'),s.solo_host.running_in_docker?'ok':'warn');document.querySelector('#soloDetail').textContent=(s.solo_host.memory_current_mb??'—')+' MB memory';
-const active=s.intelligence.active_incident;document.querySelector('#activeIncident').innerHTML=active?incidentHtml(active):'<b class="ok">No active incident</b><div class="muted">All monitored local signals are within their expected state.</div>';
-document.querySelector('#baseSamples').textContent=b.sample_count;document.querySelector('#baseMedian').textContent=ms(b.median_ms);document.querySelector('#baseP95').textContent=ms(b.p95_ms);document.querySelector('#baseThreshold').textContent=ms(b.anomaly_threshold_ms)+(b.ready?'':' (warming)');
-const q=h.summary;document.querySelector('#piAvail').textContent=pct(q.pi_full_availability_pct);document.querySelector('#workerAvail').textContent=pct(q.worker_availability_pct);document.querySelector('#avgLat').textContent=ms(q.worker_latency_avg_ms);document.querySelector('#p95Lat').textContent=ms(q.worker_latency_p95_ms);
-document.querySelector('#incidents').innerHTML=inc.incidents.length?inc.incidents.map(incidentHtml).join(''):'<div class="muted" style="margin-top:8px">No incidents recorded yet.</div>';document.querySelector('#checked').textContent='Updated '+new Date(s.checked_at).toLocaleTimeString()}catch(e){document.querySelector('#checked').textContent='Refresh failed: '+e.message}}
-document.querySelector('#refresh').onclick=load;load();setInterval(load,10000);
-</script></body></html>
+function rootHtml(r){
+  if(!r)return '<div class="root muted">Root-cause assessment becomes available when the incident closes.</div>';
+  const ev=(r.evidence||[]).map(x=>'<li>'+esc(x)+'</li>').join('');
+  const lim=(r.limitations||[]).length?'<div class="limitations">Limitations: '+esc(r.limitations.join(' · '))+'</div>':'';
+  return '<div class="root"><b>Likely cause: '+esc(r.label)+' <span class="confidence">'+esc(r.confidence)+'</span></b>'
+    +(ev?'<ul class="evidence-list">'+ev+'</ul>':'<div class="muted">No supporting evidence recorded.</div>')+lim+'</div>';
+}
+function incidentHtml(x){
+  return '<div class="incident '+esc(x.severity)+'"><b>'+esc(x.summary)+'</b><div class="meta">'
+    +esc(x.category)+' · '+esc(x.status)+' · '+esc(x.duration)+'</div>'+rootHtml(x.root_cause)+'</div>';
+}
+async function load(){
+  try{
+    const [s,h,inc,ev]=await Promise.all([
+      fetch('/api/status').then(r=>r.json()),
+      fetch('/api/history?minutes=60').then(r=>r.json()),
+      fetch('/api/incidents?limit=12').then(r=>r.json()),
+      fetch('/api/evidence').then(r=>r.json())
+    ]);
+    const pn=s.pi_node,w=s.livingpanda.data_worker;
+    document.querySelector('#pi').textContent=pn.reachable_ports===3?'Reachable':pn.reachable_ports?'Partial':'Unreachable';
+    sclass(document.querySelector('#pi'),pn.reachable_ports===3?'ok':pn.reachable_ports?'warn':'bad');
+    document.querySelector('#piDetail').textContent=pn.reachable_ports+' of 3 local Pi ports reachable';
+    document.querySelector('#worker').textContent=w.reachable?'Available':'Unavailable';
+    sclass(document.querySelector('#worker'),w.reachable?'ok':'bad');
+    document.querySelector('#workerDetail').textContent=w.reachable?'HTTP '+w.status_code+' · '+w.latency_ms+' ms':'Health endpoint unavailable';
+    document.querySelector('#solo').textContent=s.solo_host.running_in_docker?'Healthy':'Unknown';
+    sclass(document.querySelector('#solo'),s.solo_host.running_in_docker?'ok':'warn');
+    document.querySelector('#soloDetail').textContent=(s.solo_host.memory_current_mb??'—')+' MB memory';
+
+    const active=s.intelligence.active_incident;
+    document.querySelector('#activeIncident').innerHTML=active?incidentHtml(active):
+      '<b class="ok">No active incident</b><div class="muted">All monitored local signals are within their expected state.</div>';
+
+    const e=ev.evidence;
+    document.querySelector('#bridge').textContent=e?(e.bridge_ok?'Available':'Unavailable'):'—';
+    document.querySelector('#internet').textContent=e&&e.internet_ok!=null?(e.internet_ok?'Online':'Offline'):'Unknown';
+    document.querySelector('#pcAge').textContent=e?age(e.pc_intel_freshness_seconds):'—';
+    document.querySelector('#cloudReconnects').textContent=e&&e.cloud_counts?e.cloud_counts.reconnect_requested??'—':'—';
+    document.querySelector('#evidenceNote').textContent=e&&e.pc_intel_freshness_seconds>300?
+      'PC Intelligence snapshots are currently stale; live internet and local runtime evidence are weighted more heavily.':
+      'Fresh evidence is weighted more heavily than stale or missing sources.';
+
+    const q=h.summary;
+    document.querySelector('#piAvail').textContent=pct(q.pi_full_availability_pct);
+    document.querySelector('#workerAvail').textContent=pct(q.worker_availability_pct);
+    document.querySelector('#avgLat').textContent=ms(q.worker_latency_avg_ms);
+    document.querySelector('#p95Lat').textContent=ms(q.worker_latency_p95_ms);
+    document.querySelector('#incidents').innerHTML=inc.incidents.length?inc.incidents.map(incidentHtml).join(''):
+      '<div class="muted" style="margin-top:8px">No incidents recorded yet.</div>';
+    document.querySelector('#checked').textContent='Updated '+new Date(s.checked_at).toLocaleTimeString();
+  }catch(e){document.querySelector('#checked').textContent='Refresh failed: '+e.message}
+}
+document.querySelector('#refresh').onclick=load;
+load();setInterval(load,10000);
+</script>
+</body>
+</html>

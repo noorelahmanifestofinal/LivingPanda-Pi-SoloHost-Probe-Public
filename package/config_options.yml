@@ -1,8 +1,8 @@
 title: LivingPanda Pi Utility
 eyebrow: LivingPanda + Pi
-description: Incident Intelligence that correlates Pi and LivingPanda health changes into timed incidents with automatic recovery summaries and adaptive worker-latency baselines.
-footer_hint: Telemetry and incident history stay local in an app-owned Docker volume. No host mounts, Docker socket, secrets, or Commander control.
+description: Root-Cause Intelligence that correlates Pi, LivingPanda, runtime, network, PC Intelligence, and Cloud DEV evidence into likely-cause assessments with confidence and supporting evidence.
+footer_hint: The Pi app remains read-only and isolated. Optional host evidence is provided only by a localhost read-only companion bridge.
 output_file: .env
 after_save: >
-  Configuration saved. Start the app to begin local read-only incident monitoring.
+  Configuration saved. Start the app to begin local read-only root-cause monitoring.
 fields: []
