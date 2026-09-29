@@ -3,6 +3,7 @@ import math
 import os
 import socket
 import sqlite3
+import statistics
 import threading
 import time
 import urllib.parse
@@ -11,7 +12,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 HOST = "0.0.0.0"
 PORT = 8080
 HOST_GATEWAY = "host.docker.internal"
@@ -20,12 +21,25 @@ DB_PATH = DATA_DIR / "operator-intelligence.sqlite3"
 SAMPLE_INTERVAL_SECONDS = 10
 SAMPLE_RETENTION_SECONDS = 24 * 60 * 60
 EVENT_RETENTION_SECONDS = 7 * 24 * 60 * 60
-SLOW_WORKER_MS = 250.0
+INCIDENT_RETENTION_SECONDS = 30 * 24 * 60 * 60
+BASELINE_WINDOW_SECONDS = 6 * 60 * 60
+MIN_BASELINE_SAMPLES = 12
+STATIC_LATENCY_FALLBACK_MS = 250.0
+INCIDENT_CORRELATION_SECONDS = 30
 BASE_DIR = Path(__file__).resolve().parent
 INDEX = (BASE_DIR / "index.html").read_text(encoding="utf-8")
 
 STATE_LOCK = threading.Lock()
 LAST_STATUS = None
+
+CATEGORY_LABELS = {
+    "pi_connectivity": "Pi connectivity degraded",
+    "livingpanda_worker": "LivingPanda worker unavailable",
+    "livingpanda_stack": "LivingPanda local stack degraded",
+    "livingpanda_web": "LivingPanda local web unavailable",
+    "worker_latency": "LivingPanda worker latency degraded",
+    "host_network": "Multiple local services degraded",
+}
 
 
 def utc_iso(ts=None):
@@ -67,10 +81,32 @@ def init_db():
                 message TEXT NOT NULL,
                 details_json TEXT NOT NULL DEFAULT '{}'
             );
+            CREATE TABLE IF NOT EXISTS incidents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                opened_ts INTEGER NOT NULL,
+                closed_ts INTEGER,
+                category TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                severity TEXT NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                close_reason TEXT,
+                peak_worker_latency_ms REAL,
+                min_pi_ports INTEGER,
+                baseline_ms REAL,
+                details_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
             CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+            CREATE INDEX IF NOT EXISTS idx_incidents_opened_ts ON incidents(opened_ts);
+            CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);
             """
         )
+        backfill_incidents_from_events(conn)
 
 
 def tcp_probe(host: str, port: int, timeout: float = 1.0):
@@ -162,27 +198,84 @@ def collect_raw_status():
     }
 
 
-def status_states(status):
+def percentile(values, pct):
+    if not values:
+        return None
+    xs = sorted(values)
+    if len(xs) == 1:
+        return xs[0]
+    idx = (len(xs) - 1) * pct
+    lo = math.floor(idx)
+    hi = math.ceil(idx)
+    if lo == hi:
+        return xs[lo]
+    return xs[lo] + (xs[hi] - xs[lo]) * (idx - lo)
+
+
+def latency_baseline(conn, ts=None):
+    if ts is None:
+        ts = int(time.time())
+    since = ts - BASELINE_WINDOW_SECONDS
+    rows = conn.execute(
+        """
+        SELECT worker_latency_ms
+        FROM samples
+        WHERE ts >= ? AND ts < ? AND worker_ok = 1 AND worker_latency_ms IS NOT NULL
+        ORDER BY ts ASC
+        """,
+        (since, ts),
+    ).fetchall()
+    values = [float(r["worker_latency_ms"]) for r in rows]
+    if not values:
+        return {
+            "sample_count": 0,
+            "median_ms": None,
+            "p95_ms": None,
+            "mad_ms": None,
+            "anomaly_threshold_ms": STATIC_LATENCY_FALLBACK_MS,
+            "ready": False,
+        }
+    median = statistics.median(values)
+    deviations = [abs(v - median) for v in values]
+    mad = statistics.median(deviations) if deviations else 0.0
+    p95 = percentile(values, 0.95)
+    robust = median + 6 * max(mad, 10.0)
+    p95_rule = (p95 or median) * 2.5
+    threshold = max(150.0, robust, p95_rule)
+    ready = len(values) >= MIN_BASELINE_SAMPLES
+    return {
+        "sample_count": len(values),
+        "median_ms": round(median, 1),
+        "p95_ms": round(p95, 1) if p95 is not None else None,
+        "mad_ms": round(mad, 1),
+        "anomaly_threshold_ms": round(threshold if ready else STATIC_LATENCY_FALLBACK_MS, 1),
+        "ready": ready,
+    }
+
+
+def status_states(status, baseline=None):
     pi_count = status["pi_node"]["reachable_ports"]
     pi_state = "up" if pi_count == 3 else ("partial" if pi_count else "down")
     worker = status["livingpanda"]["data_worker"]
     worker_state = "up" if worker.get("reachable") else "down"
     latency = worker.get("latency_ms")
-    latency_state = "slow" if worker_state == "up" and latency is not None and latency >= SLOW_WORKER_MS else "normal"
+    threshold = (baseline or {}).get("anomaly_threshold_ms", STATIC_LATENCY_FALLBACK_MS)
+    latency_state = "slow" if worker_state == "up" and latency is not None and latency >= threshold else "normal"
     return {"pi": pi_state, "worker": worker_state, "latency": latency_state}
 
 
-def previous_states(conn):
+def previous_states(conn, baseline=None):
     row = conn.execute(
         "SELECT pi_reachable_ports, worker_ok, worker_latency_ms FROM samples ORDER BY ts DESC LIMIT 1"
     ).fetchone()
     if not row:
         return None
     pi_count = row["pi_reachable_ports"]
+    threshold = (baseline or {}).get("anomaly_threshold_ms", STATIC_LATENCY_FALLBACK_MS)
     return {
         "pi": "up" if pi_count == 3 else ("partial" if pi_count else "down"),
         "worker": "up" if row["worker_ok"] else "down",
-        "latency": "slow" if row["worker_ok"] and row["worker_latency_ms"] is not None and row["worker_latency_ms"] >= SLOW_WORKER_MS else "normal",
+        "latency": "slow" if row["worker_ok"] and row["worker_latency_ms"] is not None and row["worker_latency_ms"] >= threshold else "normal",
     }
 
 
@@ -193,6 +286,306 @@ def add_event(conn, ts, kind, severity, message, details=None):
     )
 
 
+def format_duration(seconds):
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds} second" + ("" if seconds == 1 else "s")
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {sec}s" if sec else f"{minutes}m"
+    hours, minute = divmod(minutes, 60)
+    return f"{hours}h {minute}m" if minute else f"{hours}h"
+
+
+def severity_rank(value):
+    return {"info": 0, "warning": 1, "error": 2}.get(value, 0)
+
+
+def classify_fault(status, baseline):
+    pi_count = status["pi_node"]["reachable_ports"]
+    worker = status["livingpanda"]["data_worker"]
+    local_web = status["livingpanda"]["local_web"]
+    worker_ok = bool(worker.get("reachable"))
+    web_ok = bool(local_web.get("reachable"))
+    latency = worker.get("latency_ms")
+    threshold = baseline["anomaly_threshold_ms"]
+
+    if pi_count < 3 and (not worker_ok or not web_ok):
+        return {
+            "category": "host_network",
+            "severity": "error" if pi_count == 0 else "warning",
+            "title": CATEGORY_LABELS["host_network"],
+            "details": {"pi_ports": pi_count, "worker_ok": worker_ok, "local_web_ok": web_ok},
+        }
+    if pi_count < 3:
+        return {
+            "category": "pi_connectivity",
+            "severity": "error" if pi_count == 0 else "warning",
+            "title": CATEGORY_LABELS["pi_connectivity"],
+            "details": {"pi_ports": pi_count},
+        }
+    if not worker_ok and not web_ok:
+        return {
+            "category": "livingpanda_stack",
+            "severity": "error",
+            "title": CATEGORY_LABELS["livingpanda_stack"],
+            "details": {"worker_ok": False, "local_web_ok": False},
+        }
+    if not worker_ok:
+        return {
+            "category": "livingpanda_worker",
+            "severity": "error",
+            "title": CATEGORY_LABELS["livingpanda_worker"],
+            "details": {"local_web_ok": web_ok},
+        }
+    if not web_ok:
+        return {
+            "category": "livingpanda_web",
+            "severity": "warning",
+            "title": CATEGORY_LABELS["livingpanda_web"],
+            "details": {"worker_ok": worker_ok},
+        }
+    if latency is not None and latency >= threshold:
+        return {
+            "category": "worker_latency",
+            "severity": "warning",
+            "title": CATEGORY_LABELS["worker_latency"],
+            "details": {"latency_ms": latency, "threshold_ms": threshold},
+        }
+    return None
+
+
+def correlate_categories(a, b):
+    if a == b:
+        return a
+    cats = {a, b}
+    if "host_network" in cats:
+        return "host_network"
+    if "pi_connectivity" in cats and len(cats) > 1:
+        return "host_network"
+    if cats == {"livingpanda_worker", "livingpanda_web"}:
+        return "livingpanda_stack"
+    if cats == {"worker_latency", "livingpanda_worker"}:
+        return "livingpanda_worker"
+    if cats == {"worker_latency", "livingpanda_stack"}:
+        return "livingpanda_stack"
+    return None
+
+
+def get_open_incident(conn):
+    return conn.execute(
+        "SELECT * FROM incidents WHERE status='open' ORDER BY opened_ts DESC, id DESC LIMIT 1"
+    ).fetchone()
+
+
+def incident_summary(category, duration, recovered=True):
+    label = CATEGORY_LABELS.get(category, "Local service degraded")
+    suffix = " → recovered automatically" if recovered else ""
+    return f"{label} for {format_duration(duration)}{suffix}"
+
+
+def close_incident(conn, row, ts, reason="recovered"):
+    duration = max(0, ts - row["opened_ts"])
+    recovered = reason == "recovered"
+    summary = incident_summary(row["category"], duration, recovered=recovered)
+    conn.execute(
+        """
+        UPDATE incidents
+        SET closed_ts=?, status='closed', close_reason=?, summary=?
+        WHERE id=?
+        """,
+        (ts, reason, summary, row["id"]),
+    )
+    if recovered:
+        add_event(
+            conn,
+            ts,
+            "incident_recovered",
+            "info",
+            summary,
+            {"incident_id": row["id"], "category": row["category"], "duration_seconds": duration},
+        )
+
+
+def update_incident(conn, row, fault, status, baseline, ts):
+    latency = status["livingpanda"]["data_worker"].get("latency_ms")
+    pi_count = status["pi_node"]["reachable_ports"]
+    peak = row["peak_worker_latency_ms"]
+    if latency is not None:
+        peak = max(float(peak or 0), float(latency))
+    min_pi = min(int(row["min_pi_ports"] if row["min_pi_ports"] is not None else 3), int(pi_count))
+    severity = fault["severity"] if severity_rank(fault["severity"]) > severity_rank(row["severity"]) else row["severity"]
+    details = json.loads(row["details_json"] or "{}")
+    seen = set(details.get("correlated_categories", [row["category"]]))
+    seen.add(fault["category"])
+    details["correlated_categories"] = sorted(seen)
+    details["last_state"] = fault["details"]
+    details["last_updated_ts"] = ts
+    conn.execute(
+        """
+        UPDATE incidents
+        SET severity=?, peak_worker_latency_ms=?, min_pi_ports=?, details_json=?
+        WHERE id=?
+        """,
+        (severity, peak, min_pi, json.dumps(details, separators=(",", ":")), row["id"]),
+    )
+
+
+def open_incident(conn, fault, status, baseline, ts):
+    latency = status["livingpanda"]["data_worker"].get("latency_ms")
+    pi_count = status["pi_node"]["reachable_ports"]
+    details = {
+        "first_state": fault["details"],
+        "correlated_categories": [fault["category"]],
+        "baseline": baseline,
+    }
+    cur = conn.execute(
+        """
+        INSERT INTO incidents(
+            opened_ts, category, status, severity, title, summary,
+            peak_worker_latency_ms, min_pi_ports, baseline_ms, details_json
+        ) VALUES(?,?,'open',?,?,?,?,?,?,?)
+        """,
+        (
+            ts,
+            fault["category"],
+            fault["severity"],
+            fault["title"],
+            fault["title"] + " — ongoing",
+            latency,
+            pi_count,
+            baseline.get("median_ms"),
+            json.dumps(details, separators=(",", ":")),
+        ),
+    )
+    incident_id = cur.lastrowid
+    add_event(
+        conn,
+        ts,
+        "incident_opened",
+        fault["severity"],
+        fault["title"],
+        {"incident_id": incident_id, "category": fault["category"], **fault["details"]},
+    )
+
+
+def handle_incident(conn, status, baseline):
+    ts = status["checked_ts"]
+    fault = classify_fault(status, baseline)
+    open_row = get_open_incident(conn)
+
+    if fault is None:
+        if open_row:
+            close_incident(conn, open_row, ts, "recovered")
+        return
+
+    if open_row is None:
+        open_incident(conn, fault, status, baseline, ts)
+        return
+
+    if open_row["category"] == fault["category"]:
+        update_incident(conn, open_row, fault, status, baseline, ts)
+        return
+
+    merged = correlate_categories(open_row["category"], fault["category"])
+    age = ts - open_row["opened_ts"]
+    if merged and age <= INCIDENT_CORRELATION_SECONDS:
+        details = json.loads(open_row["details_json"] or "{}")
+        seen = set(details.get("correlated_categories", [open_row["category"]]))
+        seen.add(fault["category"])
+        details["correlated_categories"] = sorted(seen)
+        details["correlation_window_seconds"] = INCIDENT_CORRELATION_SECONDS
+        details["last_state"] = fault["details"]
+        title = CATEGORY_LABELS[merged]
+        severity = "error" if severity_rank(fault["severity"]) >= severity_rank("error") or severity_rank(open_row["severity"]) >= severity_rank("error") else "warning"
+        latency = status["livingpanda"]["data_worker"].get("latency_ms")
+        peak = open_row["peak_worker_latency_ms"]
+        if latency is not None:
+            peak = max(float(peak or 0), float(latency))
+        min_pi = min(int(open_row["min_pi_ports"] if open_row["min_pi_ports"] is not None else 3), int(status["pi_node"]["reachable_ports"]))
+        conn.execute(
+            """
+            UPDATE incidents SET category=?, severity=?, title=?, summary=?,
+                peak_worker_latency_ms=?, min_pi_ports=?, details_json=?
+            WHERE id=?
+            """,
+            (
+                merged,
+                severity,
+                title,
+                title + " — correlated incident ongoing",
+                peak,
+                min_pi,
+                json.dumps(details, separators=(",", ":")),
+                open_row["id"],
+            ),
+        )
+        add_event(
+            conn,
+            ts,
+            "incident_correlated",
+            severity,
+            f"Correlated {open_row['category']} + {fault['category']} into {merged}",
+            {"incident_id": open_row["id"], "category": merged},
+        )
+        return
+
+    close_incident(conn, open_row, ts, "condition_changed")
+    open_incident(conn, fault, status, baseline, ts)
+
+
+def backfill_incidents_from_events(conn):
+    if conn.execute("SELECT value FROM meta WHERE key='incident_backfill_v1'").fetchone():
+        return
+    if conn.execute("SELECT count(*) FROM incidents").fetchone()[0] > 0:
+        conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('incident_backfill_v1','existing')")
+        return
+
+    opens = {
+        "worker_slow": ("worker_latency", "warning"),
+        "pi_unreachable": ("pi_connectivity", "error"),
+        "pi_partial": ("pi_connectivity", "warning"),
+        "worker_unreachable": ("livingpanda_worker", "error"),
+    }
+    closes = {
+        "worker_latency_recovered": "worker_latency",
+        "pi_recovered": "pi_connectivity",
+        "worker_recovered": "livingpanda_worker",
+    }
+    active = {}
+    rows = conn.execute("SELECT * FROM events ORDER BY ts ASC, id ASC").fetchall()
+    for row in rows:
+        kind = row["kind"]
+        if kind in opens:
+            category, severity = opens[kind]
+            active.setdefault(category, row)
+        elif kind in closes:
+            category = closes[kind]
+            start = active.pop(category, None)
+            if start:
+                duration = max(0, row["ts"] - start["ts"])
+                details = {"backfilled_from_events": [start["id"], row["id"]]}
+                conn.execute(
+                    """
+                    INSERT INTO incidents(
+                        opened_ts, closed_ts, category, status, severity, title,
+                        summary, close_reason, details_json
+                    ) VALUES(?,? ,?,'closed',?,?,?,?,?)
+                    """,
+                    (
+                        start["ts"],
+                        row["ts"],
+                        category,
+                        start["severity"],
+                        CATEGORY_LABELS[category],
+                        incident_summary(category, duration, True),
+                        "recovered",
+                        json.dumps(details, separators=(",", ":")),
+                    ),
+                )
+    conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('incident_backfill_v1','done')")
+
+
 def record_sample(status):
     ts = status["checked_ts"]
     pi = status["pi_node"]
@@ -200,8 +593,9 @@ def record_sample(status):
     local_web = status["livingpanda"]["local_web"]
     mem = status["solo_host"].get("memory_current_mb")
     with db() as conn:
-        prev = previous_states(conn)
-        now = status_states(status)
+        baseline = latency_baseline(conn, ts)
+        prev = previous_states(conn, baseline)
+        now = status_states(status, baseline)
         conn.execute(
             """
             INSERT OR REPLACE INTO samples(
@@ -233,35 +627,21 @@ def record_sample(status):
                     add_event(conn, ts, "pi_partial", "warning", "Some Pi Node ports became unreachable", {"reachable_ports": pi["reachable_ports"]})
                 else:
                     add_event(conn, ts, "pi_unreachable", "error", "Pi Node became unreachable", {"reachable_ports": 0})
-
             if prev["worker"] != now["worker"]:
                 if now["worker"] == "up":
                     add_event(conn, ts, "worker_recovered", "info", "LivingPanda worker recovered", {"latency_ms": worker.get("latency_ms")})
                 else:
                     add_event(conn, ts, "worker_unreachable", "warning", "LivingPanda worker became unreachable")
-
             if prev["latency"] != now["latency"] and now["worker"] == "up":
                 if now["latency"] == "slow":
-                    add_event(conn, ts, "worker_slow", "warning", "LivingPanda worker latency became slow", {"latency_ms": worker.get("latency_ms"), "threshold_ms": SLOW_WORKER_MS})
+                    add_event(conn, ts, "worker_slow", "warning", "LivingPanda worker latency became slow", {"latency_ms": worker.get("latency_ms"), "threshold_ms": baseline["anomaly_threshold_ms"]})
                 else:
                     add_event(conn, ts, "worker_latency_recovered", "info", "LivingPanda worker latency recovered", {"latency_ms": worker.get("latency_ms")})
 
+        handle_incident(conn, status, baseline)
         conn.execute("DELETE FROM samples WHERE ts < ?", (ts - SAMPLE_RETENTION_SECONDS,))
         conn.execute("DELETE FROM events WHERE ts < ?", (ts - EVENT_RETENTION_SECONDS,))
-
-
-def percentile(values, pct):
-    if not values:
-        return None
-    xs = sorted(values)
-    if len(xs) == 1:
-        return xs[0]
-    idx = (len(xs) - 1) * pct
-    lo = math.floor(idx)
-    hi = math.ceil(idx)
-    if lo == hi:
-        return xs[lo]
-    return xs[lo] + (xs[hi] - xs[lo]) * (idx - lo)
+        conn.execute("DELETE FROM incidents WHERE status='closed' AND closed_ts < ?", (ts - INCIDENT_RETENTION_SECONDS,))
 
 
 def history(minutes=60):
@@ -290,7 +670,6 @@ def history(minutes=60):
         }
         for r in rows
     ]
-
     count = len(samples)
     worker_latencies = [x["worker_latency_ms"] for x in samples if x["worker_ok"] and x["worker_latency_ms"] is not None]
     return {
@@ -328,6 +707,53 @@ def recent_events(limit=50):
     ]
 
 
+def incident_to_dict(row):
+    now = int(time.time())
+    closed = row["closed_ts"]
+    duration = (closed or now) - row["opened_ts"]
+    return {
+        "id": row["id"],
+        "opened_ts": row["opened_ts"],
+        "opened_at": utc_iso(row["opened_ts"]),
+        "closed_ts": closed,
+        "closed_at": utc_iso(closed) if closed else None,
+        "duration_seconds": max(0, duration),
+        "duration": format_duration(duration),
+        "category": row["category"],
+        "status": row["status"],
+        "severity": row["severity"],
+        "title": row["title"],
+        "summary": row["summary"] if row["status"] == "closed" else f"{row['title']} for {format_duration(duration)} — ongoing",
+        "close_reason": row["close_reason"],
+        "peak_worker_latency_ms": row["peak_worker_latency_ms"],
+        "min_pi_ports": row["min_pi_ports"],
+        "baseline_ms": row["baseline_ms"],
+        "details": json.loads(row["details_json"] or "{}"),
+    }
+
+
+def incidents(limit=30, status=None):
+    limit = max(1, min(200, int(limit)))
+    sql = "SELECT * FROM incidents"
+    params = []
+    if status in ("open", "closed"):
+        sql += " WHERE status=?"
+        params.append(status)
+    sql += " ORDER BY opened_ts DESC, id DESC LIMIT ?"
+    params.append(limit)
+    with db() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [incident_to_dict(r) for r in rows]
+
+
+def baseline_status():
+    with db() as conn:
+        result = latency_baseline(conn, int(time.time()) + 1)
+    result["window_hours"] = BASELINE_WINDOW_SECONDS // 3600
+    result["minimum_samples"] = MIN_BASELINE_SAMPLES
+    return result
+
+
 def monitor_loop():
     global LAST_STATUS
     while True:
@@ -350,20 +776,28 @@ def current_status():
         status = collect_raw_status()
     status = json.loads(json.dumps(status))
     h = history(60)
+    with db() as conn:
+        baseline = latency_baseline(conn, int(time.time()) + 1)
+        open_row = get_open_incident(conn)
     status["intelligence"] = {
         "history_window_minutes": 60,
         "sample_interval_seconds": SAMPLE_INTERVAL_SECONDS,
         "summary": h["summary"],
+        "baseline": baseline,
+        "active_incident": incident_to_dict(open_row) if open_row else None,
+        "recent_incidents": incidents(8),
         "recent_events": recent_events(8),
         "storage": "SQLite in app-owned Docker volume",
         "sample_retention_hours": 24,
         "event_retention_days": 7,
+        "incident_retention_days": 30,
+        "correlation_window_seconds": INCIDENT_CORRELATION_SECONDS,
     }
     return status
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LivingPandaPiUtility/0.3"
+    server_version = "LivingPandaPiUtility/0.4"
 
     def send_bytes(self, status, body: bytes, content_type: str):
         self.send_response(status)
@@ -392,6 +826,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(history(query.get("minutes", ["60"])[0]))
         elif parsed.path == "/api/events":
             self.send_json({"events": recent_events(query.get("limit", ["50"])[0])})
+        elif parsed.path == "/api/incidents":
+            self.send_json({"incidents": incidents(query.get("limit", ["30"])[0], query.get("status", [None])[0])})
+        elif parsed.path == "/api/baseline":
+            self.send_json(baseline_status())
         else:
             self.send_json({"ok": False, "error": "not_found"}, 404)
 
