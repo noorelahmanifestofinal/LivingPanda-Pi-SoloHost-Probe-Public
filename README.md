@@ -1,13 +1,22 @@
-﻿# LivingPanda Pi Utility — Public Distribution
+# LivingPanda Pi Utility
 
-Public distribution source for the harmless LivingPanda Pi SoloHost utility image.
+## v0.3.0 — Local Operator Intelligence
 
-Canonical development source remains under `LivingPanda-Online/LivingPanda-Pi-SoloHost-Probe`. This repository exists so Pi SoloHost can anonymously pull the container while the LivingPanda organization keeps public packages disabled.
+Read-only local monitoring for Pi SoloHost:
 
-## v0.2.0
+- Pi Node port reachability history for 31401–31403
+- LivingPanda worker availability and latency history
+- state-change events for unreachable / partial / recovered states
+- worker latency slow/recovered events
+- 60-minute availability and latency summary
+- 24-hour sample retention
+- 7-day event retention
+- SQLite telemetry stored only in an app-owned Docker volume
 
-Read-only dashboard for Pi Node port reachability, SoloHost container runtime health, and allow-listed LivingPanda worker health.
+Security boundary: no Docker socket, no Windows host mounts, no privileged mode, all Linux capabilities dropped, read-only container root filesystem, no Commander control, no API keys or private files.
 
-Security boundary: no Docker socket, host mounts, privileged mode, Commander control, API keys, or private LivingPanda data.
+Pi SoloHost currently disallows Docker Compose `security_opt`, so v0.3 does not request `no-new-privileges` through Compose.
 
-Public image: `ghcr.io/noorelahmanifestofinal/livingpanda-pi-solohost-probe:0.2.0`
+Canonical source: `LivingPanda-Online/LivingPanda-Pi-SoloHost-Probe`
+
+Public image: `ghcr.io/noorelahmanifestofinal/livingpanda-pi-solohost-probe:0.3.0`

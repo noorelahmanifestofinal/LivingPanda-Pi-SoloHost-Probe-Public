@@ -1,8 +1,8 @@
 title: LivingPanda Pi Utility
 eyebrow: LivingPanda + Pi
-description: Read-only local health dashboard for Pi Node reachability, SoloHost runtime health, and LivingPanda worker availability.
-footer_hint: No secrets, host mounts, Docker socket, or Commander control are required.
+description: Local Operator Intelligence with short-term Pi Node reachability history, LivingPanda worker latency, state-change events, and recovery warnings.
+footer_hint: Telemetry stays local in an app-owned Docker volume. No host mounts, Docker socket, secrets, or Commander control.
 output_file: .env
 after_save: >
-  Configuration saved. Start the app to open the read-only local health dashboard.
+  Configuration saved. Start the app to begin local read-only monitoring.
 fields: []
