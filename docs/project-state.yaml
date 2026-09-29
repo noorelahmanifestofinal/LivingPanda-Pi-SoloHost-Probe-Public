@@ -1,0 +1,168 @@
+﻿schema_version: 1
+project:
+  name: LivingPanda Pi Utility
+  purpose: >
+    A local, read-only Pi SoloHost operator intelligence utility that observes
+    Pi Node and LivingPanda health, correlates incidents, explains likely root
+    causes, recommends safe recovery actions, and verifies recovery outcomes.
+  canonical_branch: main
+
+release:
+  current: "0.6.0"
+  name: Recovery Intelligence
+  canonical_tag: v0.6.0
+  canonical_commit: e72f3b1
+  public_distribution_commit: 4e27212
+  image: ghcr.io/noorelahmanifestofinal/livingpanda-pi-solohost-probe:0.6.0
+  image_digest: sha256:2858bca2f65cb43976dc3838ba20e5b91f9e9efebb6039d9aafd759689298832
+  pi_listing_visibility: unlisted
+  production_status_at_handoff:
+    app_health: healthy
+    pi_node_state: Synced!
+    evidence_bridge: healthy
+
+capabilities:
+  v0_1: Pi SoloHost compatibility proof
+  v0_2: read-only health visibility
+  v0_3: persistent telemetry and event history
+  v0_4: incident correlation and adaptive latency baseline
+  v0_5: root-cause intelligence using local + PC/Cloud evidence
+  v0_6:
+    - safe read-only recovery recommendations
+    - component recovery timing
+    - 30-minute stability verification
+    - recurrence detection
+    - escalation from observe to inspect
+    - recovery outcome tracking
+
+components:
+  solohost_app:
+    entrypoint: server.py
+    ui: index.html
+    package_compose: package/docker-compose.yml
+    package_config: package/config_options.yml
+    local_test_compose: docker-compose.local.yml
+    listen_port_container: 8080
+    listen_port_host: 18080
+    persistence: /data/operator-intelligence.sqlite3
+  evidence_bridge:
+    source: evidence-bridge/app.py
+    compose: evidence-bridge/compose.host.yml
+    host_port: 8001
+    purpose: >
+      Exposes whitelisted read-only summaries from PC Intelligence and Cloud
+      Device reliability logs. It must never expose raw secrets or host control.
+  tests:
+    incident: tests/test_incidents.py
+    root_cause: tests/test_root_cause.py
+    recovery: tests/test_recovery.py
+    total_at_v0_6: 14
+
+security_invariants:
+  privileged: false
+  read_only_rootfs: true
+  cap_drop: ALL
+  docker_socket: forbidden
+  host_mounts_in_solohost_app: forbidden
+  commander_control: forbidden
+  automatic_repair_execution: forbidden
+  secrets_in_repo_or_app: forbidden
+  evidence_bridge:
+    read_only: true
+    summarized_signals_only: true
+
+data:
+  sqlite_path: /data/operator-intelligence.sqlite3
+  tables:
+    - samples
+    - events
+    - incidents
+    - evidence_samples
+    - meta
+  incident_lifecycle:
+    - open
+    - correlated
+    - closed
+    - root_cause_assessed
+    - recovery_recommended
+    - pending_stability
+    - verified_stable_or_recurred
+  retention:
+    samples_hours: 24
+    events_days: 7
+    evidence_days: 7
+    incidents_days: 30
+  migration_policy: additive_forward_only
+  historical_integrity: >
+    Do not synthesize root-cause or recovery outcomes for incidents that closed
+    before the required evidence/lifecycle logic existed.
+
+v0_6_recovery:
+  stability_window_seconds: 1800
+  recommendation_modes:
+    - observe
+    - inspect
+  behavior:
+    recovered: pending_stability
+    stable_for_window: verified_stable
+    related_failure_within_window: recurred
+    superseded_condition: superseded
+  automatic_actions: none
+
+next_milestone:
+  version: "0.7.0"
+  name: Recovery Learning / Playbook Intelligence
+  objective: >
+    Learn which recommendations have the best observed outcomes for this local
+    environment by aggregating repeated incidents, recovery durations,
+    recurrence behavior, evidence quality, and recommendation history.
+  safety_rule: >
+    Learning may change recommendation ranking, but must not execute recovery
+    actions. Any future action integration remains guarded and approval-gated.
+  proposed_data_model:
+    - playbook_key
+    - cause
+    - incident_category
+    - recommendation_text
+    - observation_count
+    - verified_stable_count
+    - recurrence_count
+    - success_rate
+    - median_recovery_seconds
+    - p95_recovery_seconds
+    - median_stability_seconds
+    - confidence_distribution
+    - evidence_quality
+    - last_updated_ts
+  acceptance_criteria:
+    - preserve every v0.6 table and historical row
+    - aggregate only evidence-backed v0.6+ recovery records
+    - require a minimum sample count before calling a playbook learned
+    - show sample count beside learned recommendations
+    - expose why a recommendation ranks above alternatives
+    - never equate correlation with causation
+    - never auto-execute a recommendation
+    - add regression tests for sparse data, conflicting outcomes, recurrence, and stable outcomes
+    - migration test against a copy of production SQLite
+    - Pi validator must return ok=true
+    - full CI must pass before merge
+
+known_operational_notes:
+  - Docker Desktop stopping makes both Pi Node and SoloHost unavailable; wait for engine recovery before diagnosing app failure.
+  - Desktop RPC timeouts can occur while Cloud Device remains connected; split long verification operations into smaller read-only checks.
+  - Pi Node may temporarily report Catching up after Docker restarts; verify structured state reaches Synced! before declaring recovery complete.
+  - Pi listing should stay Unlisted unless owner explicitly decides otherwise.
+  - Prefer in-place Compose upgrades so the app-owned operator-data volume survives.
+
+handoff:
+  last_completed_milestone: v0.6.0
+  next_action: >
+    Start v0.7 from main on a feature branch after re-verifying live v0.6 health,
+    production database persistence, Evidence Bridge health, and Pi Node sync.
+  first_files_to_read:
+    - AGENTS.md
+    - docs/project-state.yaml
+    - docs/ARCHITECTURE.md
+    - docs/RUNBOOK.md
+    - README.md
+

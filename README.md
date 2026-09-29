@@ -1,5 +1,7 @@
 # LivingPanda Pi Utility
 
+> **AI / contributor handoff:** start with [AGENTS.md](AGENTS.md), then [docs/project-state.yaml](docs/project-state.yaml), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [docs/RUNBOOK.md](docs/RUNBOOK.md). The project-state file is the canonical machine-readable handoff for the current release and next milestone.
+
 ## v0.6.0 — Recovery Intelligence
 
 v0.6 extends Root-Cause Intelligence into a safe recovery lifecycle:
@@ -65,6 +67,17 @@ The optional PC Intelligence Evidence Bridge remains read-only and only exposes 
 - root-cause evidence samples: 7 days
 - incidents/recovery outcomes: 30 days
 - SQLite remains in Pi's app-owned Docker volume
+
+### Continuation map
+
+The next planned build is **v0.7.0 — Recovery Learning / Playbook Intelligence**. It will learn from repeated v0.6 recovery outcomes, but it must remain recommendation-only and approval-gated. Acceptance criteria and proposed data fields are maintained in `docs/project-state.yaml`.
+
+Additional technical references:
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Release / rollback runbook](docs/RUNBOOK.md)
+- [Data + API contract](docs/DATA_API.md)
+- [Key architectural decisions](docs/DECISIONS.md)
 
 Canonical source: `LivingPanda-Online/LivingPanda-Pi-SoloHost-Probe`
 
