@@ -1,0 +1,8 @@
+title: LivingPanda SoloHost Probe
+eyebrow: LivingPanda + Pi
+description: Safe local compatibility probe for Pi SoloHost.
+footer_hint: No secrets or private data are required.
+output_file: .env
+after_save: >
+  Configuration saved. Start the app to verify the local web surface.
+fields: []
