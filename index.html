@@ -1,24 +1,51 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>LivingPanda SoloHost Probe</title>
-  <style>
-    body{font-family:system-ui,sans-serif;background:#f7f7fb;margin:0;padding:32px;color:#171717}
-    main{max-width:680px;margin:auto;background:white;padding:28px;border-radius:18px;box-shadow:0 8px 30px #0001}
-    h1{margin-top:0}.ok{font-weight:700}.small{color:#666}
-    code{background:#f1f1f5;padding:2px 6px;border-radius:6px}
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LivingPanda Pi Utility</title>
+<style>
+:root{font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;color:#171717;background:#f5f6fa}
+*{box-sizing:border-box}body{margin:0}.wrap{max-width:920px;margin:auto;padding:22px 16px 40px}
+header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:18px}
+h1{font-size:clamp(24px,5vw,38px);margin:0 0 6px}.sub{color:#60646c;margin:0}.badge{padding:7px 10px;border-radius:999px;background:#fff;border:1px solid #ddd;font-size:13px;white-space:nowrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}.card{background:#fff;border:1px solid #e7e7ec;border-radius:16px;padding:18px;box-shadow:0 5px 20px #0000000a}
+.label{font-size:13px;color:#6b6f78;text-transform:uppercase;letter-spacing:.05em}.value{font-size:22px;font-weight:750;margin:8px 0}.detail{font-size:14px;color:#565b64;line-height:1.45}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#9aa0aa;margin-right:7px}.ok .dot{background:#2d9d5b}.warn .dot{background:#d28b23}.bad .dot{background:#bf3f3f}
+.ports{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.pill{font-size:12px;border:1px solid #dedee5;border-radius:999px;padding:5px 8px}
+footer{margin-top:18px;font-size:13px;color:#686d76;line-height:1.5}.security{margin-top:14px;padding:14px;background:#fff;border:1px solid #e7e7ec;border-radius:14px}
+button{border:0;border-radius:10px;padding:9px 12px;font-weight:650;cursor:pointer}#refresh{background:#171717;color:#fff}.muted{color:#777}
+@media(max-width:540px){header{display:block}.badge{display:inline-block;margin-top:10px}.wrap{padding-top:16px}}
+</style>
 </head>
 <body>
-<main>
-  <h1>LivingPanda SoloHost Probe</h1>
-  <p class="ok">✓ Container running</p>
-  <p class="ok">✓ Docker networking working</p>
-  <p class="ok">✓ Pi SoloHost-ready web surface</p>
-  <p>Version <code>0.1.0</code></p>
-  <p class="small">Local-only test. No database, API keys, Commander control, or private files are exposed.</p>
-</main>
-</body>
-</html>
+<div class="wrap">
+<header><div><h1>LivingPanda Pi Utility</h1><p class="sub">Read-only local health dashboard for Pi SoloHost.</p></div><div class="badge">v0.2.0</div></header>
+<div class="grid">
+<section class="card" id="pi"><div class="label">Pi Node</div><div class="value"><span class="dot"></span><span class="text">Checking…</span></div><div class="detail">Testing local Pi node ports 31401–31403.</div><div class="ports"></div></section>
+<section class="card" id="docker"><div class="label">SoloHost container</div><div class="value"><span class="dot"></span><span class="text">Checking…</span></div><div class="detail"></div></section>
+<section class="card" id="worker"><div class="label">LivingPanda worker</div><div class="value"><span class="dot"></span><span class="text">Checking…</span></div><div class="detail"></div></section>
+</div>
+<div class="security"><strong>Security boundary:</strong> no Docker socket, no host filesystem mounts, no privileged mode, and no Commander control. Only allow-listed read-only health probes are used.</div>
+<footer><button id="refresh">Refresh now</button> <span id="checked" class="muted"></span><br><br>Pi Node status here means network-port reachability only; it does not claim blockchain sync state.</footer>
+</div>
+<script>
+const cls=(el,state)=>{el.classList.remove('ok','warn','bad');el.classList.add(state)}
+const fmtUptime=s=>{if(s==null)return 'unknown';const m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);return d?d+'d '+(h%24)+'h':h?h+'h '+(m%60)+'m':m+'m'}
+async function refresh(){
+ document.querySelectorAll('.text').forEach(x=>x.textContent='Checking…');
+ try{
+  const r=await fetch('/api/status',{cache:'no-store'});const d=await r.json();
+  const pi=document.querySelector('#pi'),n=d.pi_node.reachable_ports;
+  cls(pi,n===3?'ok':n>0?'warn':'bad');pi.querySelector('.text').textContent=n===3?'Reachable':n>0?'Partially reachable':'Not detected';
+  pi.querySelector('.detail').textContent=n+' of 3 Pi node ports reachable from this isolated container.';
+  pi.querySelector('.ports').innerHTML=Object.entries(d.pi_node.ports).map(([p,v])=>'<span class="pill">'+p+': '+(v.reachable?'open':'closed')+(v.latency_ms!=null?' · '+v.latency_ms+' ms':'')+'</span>').join('');
+  const dock=document.querySelector('#docker'),s=d.solo_host;cls(dock,s.running_in_docker?'ok':'bad');dock.querySelector('.text').textContent=s.running_in_docker?'Running':'Unknown';
+  dock.querySelector('.detail').textContent='Uptime '+fmtUptime(s.uptime_seconds)+(s.memory_current_mb!=null?' · memory '+s.memory_current_mb+' MB':'')+'.';
+  const w=document.querySelector('#worker'),dw=d.livingpanda.data_worker;cls(w,dw.reachable?'ok':'warn');w.querySelector('.text').textContent=dw.reachable?'Available':'Not detected';
+  w.querySelector('.detail').textContent=dw.reachable?'Data worker health returned HTTP '+dw.status_code+' in '+dw.latency_ms+' ms.':'No LivingPanda data worker found on the allow-listed local health endpoint.';
+  document.querySelector('#checked').textContent='Last checked '+new Date(d.checked_at).toLocaleTimeString();
+ }catch(e){document.querySelector('#checked').textContent='Health check failed: '+e.message}
+}
+document.querySelector('#refresh').onclick=refresh;refresh();setInterval(refresh,10000);
+</script>
+</body></html>

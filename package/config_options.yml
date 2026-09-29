@@ -1,8 +1,8 @@
-title: LivingPanda SoloHost Probe
+title: LivingPanda Pi Utility
 eyebrow: LivingPanda + Pi
-description: Safe local compatibility probe for Pi SoloHost.
-footer_hint: No secrets or private data are required.
+description: Read-only local health dashboard for Pi Node reachability, SoloHost runtime health, and LivingPanda worker availability.
+footer_hint: No secrets, host mounts, Docker socket, or Commander control are required.
 output_file: .env
 after_save: >
-  Configuration saved. Start the app to verify the local web surface.
+  Configuration saved. Start the app to open the read-only local health dashboard.
 fields: []

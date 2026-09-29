@@ -1,15 +1,13 @@
-# LivingPanda Pi SoloHost Probe — Public Distribution
+﻿# LivingPanda Pi Utility — Public Distribution
 
-This is the public distribution copy of the harmless LivingPanda Pi SoloHost compatibility probe.
+Public distribution source for the harmless LivingPanda Pi SoloHost utility image.
 
-Canonical LivingPanda development source remains under the LivingPanda-Online organization. This repository exists only so Pi SoloHost can anonymously pull the test container.
+Canonical development source remains under `LivingPanda-Online/LivingPanda-Pi-SoloHost-Probe`. This repository exists so Pi SoloHost can anonymously pull the container while the LivingPanda organization keeps public packages disabled.
 
-## Safety boundary
+## v0.2.0
 
-This probe contains no database, API keys, Commander access, host mounts, privileged Docker access, or private LivingPanda data.
+Read-only dashboard for Pi Node port reachability, SoloHost container runtime health, and allow-listed LivingPanda worker health.
 
-Public image:
+Security boundary: no Docker socket, host mounts, privileged mode, Commander control, API keys, or private LivingPanda data.
 
-`ghcr.io/noorelahmanifestofinal/livingpanda-pi-solohost-probe:0.1.0`
-
-Version: **0.1.0**
+Public image: `ghcr.io/noorelahmanifestofinal/livingpanda-pi-solohost-probe:0.2.0`

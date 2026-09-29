@@ -1,9 +1,7 @@
 services:
   web:
     build: .
-    image: livingpanda/pi-solohost-probe:0.1.0
+    image: livingpanda/pi-solohost-probe:0.2.0
     ports:
-      - "127.0.0.1:18080:8080"
-    labels:
-      pi.ui.primary: "true"
+      - "127.0.0.1:18081:8080"
     restart: unless-stopped
