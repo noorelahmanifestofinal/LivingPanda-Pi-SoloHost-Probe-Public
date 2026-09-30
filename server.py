@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.6.0"
+import playbooks as playbook_learning
+
+VERSION = "0.7.0"
 HOST = "0.0.0.0"
 PORT = 8080
 HOST_GATEWAY = "host.docker.internal"
@@ -36,6 +38,7 @@ ROOT_CAUSE_CONTEXT_SECONDS = 30
 PC_INTEL_FRESH_SECONDS = 5 * 60
 RUNTIME_RESET_MARGIN_SECONDS = 60
 RECOVERY_STABILITY_SECONDS = int(os.environ.get("RECOVERY_STABILITY_SECONDS", 30 * 60))
+MIN_PLAYBOOK_OBSERVATIONS = int(os.environ.get("MIN_PLAYBOOK_OBSERVATIONS", 3))
 BASE_DIR = Path(__file__).resolve().parent
 INDEX = (BASE_DIR / "index.html").read_text(encoding="utf-8")
 
@@ -157,6 +160,35 @@ def init_db():
                 cloud_mcp_connected_count INTEGER,
                 evidence_json TEXT NOT NULL DEFAULT '{}'
             );
+            CREATE TABLE IF NOT EXISTS playbook_observations (
+                incident_id INTEGER PRIMARY KEY,
+                playbook_key TEXT NOT NULL,
+                cause TEXT NOT NULL,
+                incident_category TEXT NOT NULL,
+                recommendation_text TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                recovery_seconds REAL,
+                stability_seconds REAL,
+                confidence TEXT,
+                evidence_count INTEGER NOT NULL DEFAULT 0,
+                observed_ts INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS playbooks (
+                playbook_key TEXT PRIMARY KEY,
+                cause TEXT NOT NULL,
+                incident_category TEXT NOT NULL,
+                recommendation_text TEXT NOT NULL,
+                observation_count INTEGER NOT NULL,
+                verified_stable_count INTEGER NOT NULL,
+                recurrence_count INTEGER NOT NULL,
+                success_rate REAL NOT NULL,
+                median_recovery_seconds REAL,
+                p95_recovery_seconds REAL,
+                median_stability_seconds REAL,
+                confidence_distribution TEXT NOT NULL DEFAULT '{}',
+                evidence_quality TEXT NOT NULL,
+                last_updated_ts INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -166,6 +198,8 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_incidents_opened_ts ON incidents(opened_ts);
             CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);
             CREATE INDEX IF NOT EXISTS idx_evidence_ts ON evidence_samples(ts);
+            CREATE INDEX IF NOT EXISTS idx_playbook_observations_key ON playbook_observations(playbook_key);
+            CREATE INDEX IF NOT EXISTS idx_playbooks_cause_category ON playbooks(cause, incident_category);
             """
         )
         ensure_column(conn, "incidents", "root_cause", "TEXT")
@@ -185,6 +219,7 @@ def init_db():
         ensure_column(conn, "evidence_samples", "pc_wifi_state", "TEXT")
         ensure_column(conn, "evidence_samples", "pc_wifi_signal", "REAL")
         backfill_incidents_from_events(conn)
+        playbook_learning.refresh_playbooks(conn, int(time.time()))
 
 
 def tcp_probe(host: str, port: int, timeout: float = 1.0):
@@ -944,7 +979,13 @@ def component_recovery_metrics(conn, incident_row, closed_ts):
     return metrics
 
 
-def recovery_recommendation(root, recovered, reason):
+def recovery_recommendation(
+    root,
+    recovered,
+    reason,
+    category=None,
+    conn=None,
+):
     cause = root.get("cause") or "unknown"
     confidence = root.get("confidence") or "low"
 
@@ -956,6 +997,7 @@ def recovery_recommendation(root, recovered, reason):
                 "Continue observing the replacement incident. "
                 "Do not act on this superseded incident."
             ),
+            "learning": None,
         }
 
     if cause == "unknown" or confidence == "low":
@@ -966,6 +1008,7 @@ def recovery_recommendation(root, recovered, reason):
                 "Observe and collect more evidence. Do not restart services "
                 "based on a low-confidence root-cause assessment."
             ),
+            "learning": None,
         }
 
     actions = {
@@ -1000,13 +1043,26 @@ def recovery_recommendation(root, recovered, reason):
             "services together before restarting individual components."
         ),
     }
+    action = actions.get(
+        cause,
+        "Observe the recovered services and intervene only if the failure returns.",
+    )
+    learning = None
+    if conn is not None and category:
+        learning = playbook_learning.best_playbook(
+            conn,
+            cause,
+            category,
+            MIN_PLAYBOOK_OBSERVATIONS,
+        )
+        if learning.get("learned"):
+            action = learning["recommendation_text"]
+
     return {
         "mode": "observe",
         "operator_action_required": False,
-        "action": actions.get(
-            cause,
-            "Observe the recovered services and intervene only if the failure returns.",
-        ),
+        "action": action,
+        "learning": learning,
     }
 
 
@@ -1209,7 +1265,13 @@ def close_incident(conn, row, ts, reason="recovered"):
     recovered = reason == "recovered"
     summary = incident_summary(row["category"], duration, recovered=recovered)
     root = infer_root_cause(conn, row, ts)
-    recovery = recovery_recommendation(root, recovered, reason)
+    recovery = recovery_recommendation(
+        root,
+        recovered,
+        reason,
+        category=row["category"],
+        conn=conn,
+    )
     components = component_recovery_metrics(conn, row, ts)
     recovery_status = "pending_stability" if recovered else "superseded"
     recovery_verified_ts = None if recovered else ts
@@ -1217,6 +1279,7 @@ def close_incident(conn, row, ts, reason="recovered"):
         "result": "pending_stability" if recovered else "superseded",
         "initial_action": recovery["action"],
         "operator_action_required": recovery["operator_action_required"],
+        "learning": recovery.get("learning"),
         "message": (
             f"Recovery observed; watching {format_duration(RECOVERY_STABILITY_SECONDS)} for recurrence."
             if recovered
@@ -1284,6 +1347,7 @@ def close_incident(conn, row, ts, reason="recovered"):
             "mode": recovery["mode"],
             "operator_action_required": recovery["operator_action_required"],
             "recovery_status": recovery_status,
+            "learning": recovery.get("learning"),
         },
     )
     if recovered:
@@ -1649,6 +1713,7 @@ def record_sample(status, evidence=None):
 
         handle_incident(conn, status, baseline)
         verify_pending_recoveries(conn, ts)
+        playbook_learning.refresh_playbooks(conn, ts)
         conn.execute(
             "DELETE FROM samples WHERE ts < ?",
             (ts - SAMPLE_RETENTION_SECONDS,),
@@ -1830,6 +1895,7 @@ def recovery_from_row(row):
         "stability_remaining_seconds": remaining,
         "components": components,
         "outcome": outcome,
+        "learning": outcome.get("learning"),
     }
 
 
@@ -1874,6 +1940,29 @@ def incidents(limit=30, status=None):
     with db() as conn:
         rows = conn.execute(sql, params).fetchall()
     return [incident_to_dict(r) for r in rows]
+
+
+def playbooks(limit=50, cause=None, category=None, learned_only=False):
+    with db() as conn:
+        playbook_learning.refresh_playbooks(conn, int(time.time()))
+        return playbook_learning.list_playbooks(
+            conn,
+            MIN_PLAYBOOK_OBSERVATIONS,
+            limit=limit,
+            cause=cause,
+            category=category,
+            learned_only=learned_only,
+        )
+
+
+def playbook_status():
+    with db() as conn:
+        playbook_learning.refresh_playbooks(conn, int(time.time()))
+        return playbook_learning.learning_summary(
+            conn,
+            MIN_PLAYBOOK_OBSERVATIONS,
+            limit=5,
+        )
 
 
 def baseline_status():
@@ -1959,13 +2048,21 @@ def current_status():
     status = json.loads(json.dumps(status))
     h = history(60)
     with db() as conn:
-        baseline = latency_baseline(conn, int(time.time()) + 1)
+        now_ts = int(time.time()) + 1
+        baseline = latency_baseline(conn, now_ts)
         open_row = get_open_incident(conn)
+        playbook_learning.refresh_playbooks(conn, now_ts)
+        learning = playbook_learning.learning_summary(
+            conn,
+            MIN_PLAYBOOK_OBSERVATIONS,
+            limit=5,
+        )
     status["intelligence"] = {
         "history_window_minutes": 60,
         "sample_interval_seconds": SAMPLE_INTERVAL_SECONDS,
         "summary": h["summary"],
         "baseline": baseline,
+        "playbook_learning": learning,
         "active_incident": incident_to_dict(open_row) if open_row else None,
         "recent_incidents": incidents(8),
         "recent_events": recent_events(8),
@@ -1982,7 +2079,7 @@ def current_status():
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LivingPandaPiUtility/0.6"
+    server_version = "LivingPandaPiUtility/0.7"
 
     def send_bytes(self, status, body: bytes, content_type: str):
         self.send_response(status)
@@ -2036,6 +2133,22 @@ class Handler(BaseHTTPRequestHandler):
                         query.get("limit", ["30"])[0],
                         query.get("status", [None])[0],
                     )
+                }
+            )
+        elif parsed.path == "/api/playbooks":
+            learned_value = query.get("learned", [""])[0].lower()
+            learned_only = learned_value in ("1", "true", "yes")
+            self.send_json(
+                {
+                    "playbooks": playbooks(
+                        query.get("limit", ["50"])[0],
+                        query.get("cause", [None])[0],
+                        query.get("category", [None])[0],
+                        learned_only,
+                    ),
+                    "minimum_observations": MIN_PLAYBOOK_OBSERVATIONS,
+                    "causation_note": playbook_learning.CAUSATION_NOTE,
+                    "automatic_actions": "none",
                 }
             )
         elif parsed.path == "/api/baseline":

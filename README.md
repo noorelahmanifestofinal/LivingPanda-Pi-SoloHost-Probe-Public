@@ -1,6 +1,27 @@
 # LivingPanda Pi Utility
 
-> **AI / contributor handoff:** start with [AGENTS.md](AGENTS.md), then [docs/project-state.yaml](docs/project-state.yaml), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [docs/RUNBOOK.md](docs/RUNBOOK.md). The project-state file is the canonical machine-readable handoff for the current release and next milestone.
+> **AI / contributor handoff:** start with [AGENTS.md](AGENTS.md), then [docs/project-state.yaml](docs/project-state.yaml), [docs/ROADMAP.md](docs/ROADMAP.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [docs/RUNBOOK.md](docs/RUNBOOK.md). The project-state file is the canonical machine-readable handoff; the roadmap carries the product direction through v1.0 and future SoloHost apps.
+
+## v0.7.0 — Recovery Learning / Playbook Intelligence (candidate)
+
+The deployed Pi SoloHost app remains **v0.6.0** while this feature branch is validated. The v0.7 candidate learns from resolved, evidence-backed v0.6+ recovery outcomes without executing repairs.
+
+It adds:
+
+- persistent playbook observations keyed to resolved incident IDs
+- minimum sample count before a recommendation is called learned
+- verified-stable and recurrence counts with local success rate
+- median and p95 recovery duration
+- observed post-recovery stability duration
+- confidence distribution and evidence-quality labeling
+- explainable ranking when more than one learned recommendation exists
+- explicit sample counts and a correlation-not-causation warning
+- `GET /api/playbooks` plus a playbook-learning summary in `/api/status`
+- no automatic repair execution
+
+Only incidents with resolved `verified_stable` or `recurred` outcomes and actual root-cause evidence are aggregated. Sparse history remains visible as insufficient evidence rather than being promoted to a learned playbook.
+
+The candidate package points to `ghcr.io/noorelahmanifestofinal/livingpanda-pi-solohost-probe:0.7.0`, but production must not be upgraded until migration tests, Pi package validation, CI, image publishing/anonymous pull verification, and live Pi Node sync checks pass.
 
 ## v0.6.0 — Recovery Intelligence
 
@@ -74,6 +95,7 @@ The next planned build is **v0.7.0 — Recovery Learning / Playbook Intelligence
 
 Additional technical references:
 
+- [Product roadmap](docs/ROADMAP.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Release / rollback runbook](docs/RUNBOOK.md)
 - [Data + API contract](docs/DATA_API.md)

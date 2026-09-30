@@ -6,17 +6,19 @@ This file is the first handoff for any AI or human continuing this repository.
 
 Read these files in this order before changing code:
 
-1. `docs/project-state.yaml` â€” machine-readable current state and next milestone.
-2. `docs/ARCHITECTURE.md` â€” components, data flow, persistence, trust boundaries.
-3. `docs/RUNBOOK.md` â€” build, test, release, upgrade, rollback, verification.
-4. `README.md` â€” current release behavior and user-facing summary.
-5. Relevant tests under `tests/` before modifying behavior.
+1. `docs/project-state.yaml` — machine-readable current state, active candidate, and roadmap.
+2. `docs/ROADMAP.md` — human-readable product roadmap from v0.7 through v1.0 and future SoloHost apps.
+3. `docs/ARCHITECTURE.md` — components, data flow, persistence, trust boundaries.
+4. `docs/RUNBOOK.md` — build, test, release, upgrade, rollback, verification.
+5. `README.md` — current release behavior and user-facing summary.
+6. Relevant tests under `tests/` before modifying behavior.
 
 Do not infer production state from old chat history if the repository/runtime can be checked directly.
 
 ## Current release
 
 - Current canonical release: **v0.6.0 â€” Recovery Intelligence**
+- Active candidate: **v0.7.0 â€” Recovery Learning / Playbook Intelligence** on `feat/solohost-v0.7-playbook-intelligence`
 - Next planned milestone: **v0.7.0 â€” Recovery Learning / Playbook Intelligence**
 - Canonical branch: `main`
 - Releases are tagged `vX.Y.Z`.
@@ -32,7 +34,8 @@ Never add any of the following to the SoloHost app:
 - Privileged containers.
 - Windows host filesystem mounts.
 - Commander control or a general command shell.
-- Automatic Docker/Windows/network/Pi Node restarts.`r`n- Automatic repair execution of any kind.
+- Automatic Docker/Windows/network/Pi Node restarts.
+- Automatic repair execution of any kind.
 - API keys, passwords, wallet secrets, recovery phrases, or private credentials.
 - Broad host log exposure.
 

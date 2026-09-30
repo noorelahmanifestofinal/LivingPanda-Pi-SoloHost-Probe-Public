@@ -179,6 +179,30 @@ pending_stability
 
 A condition that changes into another incident without clean recovery is marked `superseded`.
 
+### Recovery Learning / Playbook Intelligence
+
+v0.7 adds a separate learning layer over resolved recovery outcomes:
+
+```text
+resolved v0.6+ incident
+   ↓
+requires root-cause evidence + verified outcome
+   ↓
+playbook_observations (one compact row per incident)
+   ↓
+playbooks aggregate
+   ↓
+minimum sample gate
+   ↓
+learned recommendation + ranking explanation
+```
+
+Only `verified_stable` and `recurred` outcomes are eligible. Pending, superseded, evidence-free, and pre-v0.6 historical incidents are not promoted into learning data.
+
+Playbook observations persist independently of the 30-day incident-retention window so learned aggregate history is not lost when verbose incident records expire. The learned layer stores only compact outcome metadata, not raw host logs.
+
+A learned recommendation can affect which existing read-only recommendation text ranks first for a matching cause/category. It never invokes that recommendation. Every learned result includes its sample count and an explicit statement that observed association does not prove causation.
+
 ## Persistence model
 
 Database:
@@ -193,6 +217,8 @@ Tables:
 - `events`
 - `incidents`
 - `evidence_samples`
+- `playbook_observations` — compact, idempotent resolved-outcome records
+- `playbooks` — aggregated local recovery statistics and ranking inputs
 - `meta`
 
 Schema changes must be additive/forward-only. Use `ensure_column` or a compatible additive migration.
@@ -231,6 +257,7 @@ Current endpoints:
 - `GET /api/history?minutes=N` — health samples/summary
 - `GET /api/events?limit=N` — recent raw events
 - `GET /api/incidents?limit=N&status=open|closed` — incident/root-cause/recovery records
+- `GET /api/playbooks?limit=N&cause=X&category=Y&learned=true` — local learned/recovery playbooks and sample counts
 - `GET /api/baseline` — adaptive worker latency baseline
 - `GET /api/evidence` — latest normalized Evidence Bridge sample
 
@@ -248,16 +275,17 @@ Keep APIs backward-compatible where practical.
 8. Public image anonymous pull.
 9. Live production verification.
 
-## Future v0.7 boundary
+## v0.7 safety boundary
 
-Recovery Learning / Playbook Intelligence may learn from historical outcomes, but it must not turn the SoloHost app into a repair executor.
+Recovery Learning / Playbook Intelligence learns from historical outcomes, but it does not turn the SoloHost app into a repair executor.
 
-The learned system should answer:
+The learned system answers:
 
 - which recommendation has the best observed local success rate?
 - how many samples support that conclusion?
 - how long does recovery normally take?
 - how often does the issue recur?
 - what evidence quality/confidence supported those cases?
+- why one learned recommendation ranks above alternatives?
 
 Any future action execution belongs behind a separate guarded approval boundary, not inside this read-only Pi app.

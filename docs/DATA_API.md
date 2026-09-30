@@ -74,6 +74,20 @@ An incident can contain:
 
 Retention: 30 days after close.
 
+### playbook_observations
+
+Compact, idempotent recovery-learning records. One row is stored per eligible resolved incident. Only evidence-backed `verified_stable` or `recurred` outcomes are eligible.
+
+Key fields include incident ID, playbook key, cause/category, recommendation text, outcome, recovery/stability duration, confidence, evidence count, and observation timestamp.
+
+These compact rows persist beyond incident retention so learned aggregate history survives normal cleanup without retaining verbose incident evidence indefinitely.
+
+### playbooks
+
+Materialized local recovery aggregates keyed by cause, incident category, and recommendation text. Fields include observation count, stable/recurrence counts, success rate, median/P95 recovery duration, median observed stability duration, confidence distribution, evidence quality, and last update timestamp.
+
+A playbook is marked learned only when its observation count meets the configured minimum sample threshold. Learned status is descriptive evidence from this local environment, not proof that the recommendation caused recovery.
+
 ### meta
 
 Migration/backfill markers and other small schema metadata.
@@ -137,7 +151,11 @@ Recent raw events.
 
 ### GET /api/incidents
 
-Canonical incident records including root-cause and recovery data when available.
+Canonical incident records including root-cause and recovery data when available. v0.7 recovery records may include `learning` provenance showing whether the chosen recommendation came from a learned local playbook, the supporting sample count, observed success rate, evidence quality, alternatives, and ranking reason.
+
+### GET /api/playbooks
+
+Local recovery-learning aggregates. Optional query parameters: `limit`, `cause`, `category`, and `learned=true`. The response always includes the minimum observation threshold, a correlation-not-causation note, and `automatic_actions: "none"`.
 
 ### GET /api/baseline
 

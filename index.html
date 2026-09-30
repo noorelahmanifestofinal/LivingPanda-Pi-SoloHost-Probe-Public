@@ -30,7 +30,7 @@ button{border:0;background:#171717;color:#fff;border-radius:10px;padding:9px 12p
 <body>
 <div class="wrap">
 <h1>LivingPanda Pi Utility</h1>
-<p class="sub">v0.6 · Recovery Intelligence</p>
+<p class="sub">v0.7 candidate · Recovery Learning / Playbook Intelligence</p>
 
 <div class="grid">
   <div class="card"><div class="label">Pi Node</div><div id="pi" class="value">Checking…</div><div id="piDetail" class="muted"></div></div>
@@ -69,6 +69,18 @@ button{border:0;background:#171717;color:#fff;border-radius:10px;padding:9px 12p
   <div id="incidents"></div>
 </div>
 
+<div class="panel" style="margin-top:12px">
+  <div class="label">Recovery playbook learning</div>
+  <div class="metrics">
+    <div class="metric"><span class="muted">Outcome observations</span><b id="playbookObs">—</b></div>
+    <div class="metric"><span class="muted">Playbooks</span><b id="playbookCount">—</b></div>
+    <div class="metric"><span class="muted">Learned</span><b id="learnedCount">—</b></div>
+    <div class="metric"><span class="muted">Minimum samples</span><b id="playbookMin">—</b></div>
+  </div>
+  <div id="playbookList"></div>
+  <div id="playbookNote" class="muted" style="margin-top:8px"></div>
+</div>
+
 <div class="security">
 Recovery recommendations are read-only guidance. The SoloHost app never runs repair commands, restarts Docker, changes network settings, or controls Commander. It verifies outcomes only from later health evidence and incident recurrence.
 </div>
@@ -92,7 +104,7 @@ function rootHtml(r){
 }
 function recoveryHtml(r){
   if(!r)return '';
-  const c=r.components||{},o=r.outcome||{};
+  const c=r.components||{},o=r.outcome||{},l=r.learning||o.learning||null;
   const stateLabel={
     pending_stability:'Watching for recurrence',
     verified_stable:'Verified stable',
@@ -107,8 +119,12 @@ function recoveryHtml(r){
     ['Web recovery',c.local_web_recovery_seconds],
     ['Overall recovery',c.incident_recovery_seconds]
   ].filter(x=>x[1]!=null).map(x=>'<div class="recovery-cell"><span class="muted">'+esc(x[0])+'</span><b>'+dur(x[1])+'</b></div>').join('');
+  const learning=l?(l.learned?
+    '<div class="muted" style="margin-top:8px">Learned from '+esc(l.sample_count)+' resolved outcomes · '+esc(l.success_rate_pct)+'% stable · evidence '+esc(l.evidence_quality)+'. '+esc(l.ranking_reason||'')+' '+esc(l.causation_note||'')+'</div>':
+    '<div class="muted" style="margin-top:8px">Local learning: '+esc(l.reason||('not learned yet · '+(l.sample_count??0)+' samples'))+'</div>'):'';
   return '<div class="recovery"><b>Recommended action <span class="state">'+esc(stateLabel)+'</span></b>'
     +'<div>'+esc(r.action||'Observe current health evidence.')+'</div>'
+    +learning
     +(cells?'<div class="recovery-grid">'+cells+'</div>':'')
     +(o.message?'<div class="muted" style="margin-top:8px">Outcome: '+esc(o.message)+remaining+'</div>':'')
     +'</div>';
@@ -157,6 +173,19 @@ async function load(){
     document.querySelector('#p95Lat').textContent=ms(q.worker_latency_p95_ms);
     document.querySelector('#incidents').innerHTML=inc.incidents.length?inc.incidents.map(incidentHtml).join(''):
       '<div class="muted" style="margin-top:8px">No incidents recorded yet.</div>';
+
+    const pl=s.intelligence.playbook_learning||{};
+    document.querySelector('#playbookObs').textContent=pl.observation_count??0;
+    document.querySelector('#playbookCount').textContent=pl.playbook_count??0;
+    document.querySelector('#learnedCount').textContent=pl.learned_playbook_count??0;
+    document.querySelector('#playbookMin').textContent=pl.minimum_observations??'—';
+    const tops=pl.top_learned||[];
+    document.querySelector('#playbookList').innerHTML=tops.length?tops.map(x=>
+      '<div class="incident info"><b>'+esc(x.cause)+' · '+esc(x.incident_category)+'</b>'
+      +'<div class="meta">'+esc(x.observation_count)+' outcomes · '+esc(x.success_rate_pct)+'% stable · evidence '+esc(x.evidence_quality)+'</div>'
+      +'<div style="margin-top:6px">'+esc(x.recommendation_text)+'</div></div>'
+    ).join(''):'<div class="muted">No playbook has enough resolved evidence-backed outcomes yet.</div>';
+    document.querySelector('#playbookNote').textContent=pl.causation_note||'Observed local outcomes do not prove causation.';
     document.querySelector('#checked').textContent='Updated '+new Date(s.checked_at).toLocaleTimeString();
   }catch(e){document.querySelector('#checked').textContent='Refresh failed: '+e.message}
 }

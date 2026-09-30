@@ -10,6 +10,10 @@ project:
 release:
   current: "0.6.0"
   name: Recovery Intelligence
+  candidate: "0.7.0"
+  candidate_name: Recovery Learning / Playbook Intelligence
+  candidate_branch: feat/solohost-v0.7-playbook-intelligence
+  candidate_status: local-development
   canonical_tag: v0.6.0
   canonical_commit: e72f3b1
   public_distribution_commit: 4e27212
@@ -34,6 +38,16 @@ capabilities:
     - recurrence detection
     - escalation from observe to inspect
     - recovery outcome tracking
+  v0_7_candidate:
+    - evidence-backed recovery outcome observations
+    - persistent playbook aggregation beyond incident retention
+    - minimum-sample learning threshold
+    - local success and recurrence rates
+    - median and p95 recovery timing
+    - evidence-quality and confidence distributions
+    - explainable ranking among learned recommendations
+    - explicit correlation-not-causation warning
+    - no automatic repair execution
 
 components:
   solohost_app:
@@ -56,7 +70,10 @@ components:
     incident: tests/test_incidents.py
     root_cause: tests/test_root_cause.py
     recovery: tests/test_recovery.py
+    playbooks: tests/test_playbooks.py
+    handoff: tests/test_handoff_docs.py
     total_at_v0_6: 14
+    total_candidate_v0_7: 22
 
 security_invariants:
   privileged: false
@@ -78,6 +95,8 @@ data:
     - events
     - incidents
     - evidence_samples
+    - playbook_observations
+    - playbooks
     - meta
   incident_lifecycle:
     - open
@@ -108,6 +127,25 @@ v0_6_recovery:
     related_failure_within_window: recurred
     superseded_condition: superseded
   automatic_actions: none
+
+v0_7_candidate:
+  minimum_playbook_observations: 3
+  eligible_outcomes:
+    - verified_stable
+    - recurred
+  evidence_required: true
+  observation_storage: playbook_observations
+  aggregate_storage: playbooks
+  recommendation_execution: none
+  causation_claims: forbidden
+  production_deploy_gate:
+    - full tests pass
+    - real production SQLite-copy migration passes
+    - both Docker image builds pass
+    - Pi package validator returns ok=true
+    - CI passes
+    - public image anonymous pull is verified
+    - Pi Node structured state is Synced!
 
 next_milestone:
   version: "0.7.0"
@@ -147,6 +185,66 @@ next_milestone:
     - Pi validator must return ok=true
     - full CI must pass before merge
 
+roadmap:
+  nearest_incomplete_milestone: "0.7.0"
+  sequence:
+    - version: "0.7.0"
+      name: Recovery Learning / Playbook Intelligence
+      status: active_candidate
+      objective: >
+        Learn from repeated evidence-backed recovery outcomes and rank safe
+        recommendations by observed local reliability without executing repairs.
+    - version: "0.8.0"
+      name: Generic Pi Node Operator Edition
+      status: planned
+      objective: >
+        Remove workstation-specific assumptions so another Pi Node operator can
+        install and use the same SoloHost package without editing source.
+      acceptance_highlights:
+        - first-run capability discovery
+        - optional LivingPanda services degrade gracefully
+        - generic Pi Node, Docker, and network diagnostics
+        - privacy and retention controls
+        - diagnostics export without secrets
+        - safe local-data reset
+        - second-machine compatibility proof
+    - version: "0.9.0"
+      name: Private Beta Readiness
+      status: planned
+      rollout: "5-20 opt-in Pi Node operators"
+      listing_visibility: unlisted
+      objective: >
+        Validate reliability, usability, privacy, compatibility, upgrade, and
+        support behavior with a small real-world operator group.
+    - version: "1.0.0"
+      name: LivingPanda Node Intelligence / Listed SoloHost Candidate
+      status: planned
+      objective: >
+        Prepare the generic operator product for broad SoloHost distribution.
+      listing_gate:
+        - successful private beta
+        - generic-machine compatibility proven
+        - privacy disclosures complete
+        - support and rollback documentation complete
+        - public artifacts match deployed package
+        - explicit owner approval before changing to listed
+  future_product_family:
+    - LivingPanda Node Intelligence
+    - LivingPanda Local AI Worker
+    - LivingPanda SME Edge
+    - LivingPanda Education Edge
+    - LivingPanda Privacy Shield
+    - LivingPanda Compute Worker
+  architectural_principles:
+    - model_agnostic
+    - local_first_where_practical
+    - privacy_aware
+    - portable_outside_pi
+    - modular
+    - safe_by_default
+    - no_privileged_control_in_operator_app
+  canonical_human_roadmap: docs/ROADMAP.md
+
 known_operational_notes:
   - Docker Desktop stopping makes both Pi Node and SoloHost unavailable; wait for engine recovery before diagnosing app failure.
   - Desktop RPC timeouts can occur while Cloud Device remains connected; split long verification operations into smaller read-only checks.
@@ -156,9 +254,12 @@ known_operational_notes:
 
 handoff:
   last_completed_milestone: v0.6.0
+  active_candidate: v0.7.0
   next_action: >
-    Start v0.7 from main on a feature branch after re-verifying live v0.6 health,
-    production database persistence, Evidence Bridge health, and Pi Node sync.
+    Finish v0.7 candidate validation on the feature branch: full regression tests,
+    migration against a SQLite backup copy, image builds, and Pi package validation.
+    Do not merge or deploy until CI passes, the public image is anonymously pullable,
+    and Pi Node structured state has returned to Synced! after the Docker recovery.
   first_files_to_read:
     - AGENTS.md
     - docs/project-state.yaml

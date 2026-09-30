@@ -1,7 +1,7 @@
 title: LivingPanda Pi Utility
 eyebrow: LivingPanda + Pi
-description: Recovery Intelligence that turns likely causes into safe read-only recommendations, tracks component recovery time, and verifies whether recovery remains stable or recurs.
-footer_hint: Recommendations never execute repairs. The app only observes later health evidence and incident recurrence.
+description: Recovery Learning that aggregates resolved evidence-backed recovery outcomes into explainable local playbooks while keeping recommendations read-only.
+footer_hint: Learned recommendations show sample counts and observed outcomes. Correlation does not prove causation, and the app never executes repairs.
 output_file: .env
 after_save: >
   Configuration saved. Start the app to begin local read-only recovery monitoring.
